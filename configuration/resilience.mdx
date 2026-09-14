@@ -1,7 +1,7 @@
 ---
 title: "Resilience4j circuit breaker and retry configuration"
 sidebarTitle: "Resilience"
-description: "Configure Resilience4j circuit breaker and retry in Order Service to handle Inventario Service failures. Covers sliding window, failure rate threshold, wait duration, and retry attempts."
+description: "Configure Resilience4j circuit breaker and retry in Order Service to protect against Inventario Service failures, with sliding window and retry settings."
 ---
 
 Order Service calls Inventario Service synchronously via Feign to check stock availability before placing an order. This synchronous dependency means that if Inventario Service becomes slow or unresponsive, Order Service requests will queue up and eventually time out — cascading the failure across the system. To guard against this, Order Service implements two complementary fault-tolerance patterns from **Resilience4j**: a **circuit breaker** that short-circuits calls to a failing service and a **retry** mechanism that automatically re-attempts transient failures before giving up.

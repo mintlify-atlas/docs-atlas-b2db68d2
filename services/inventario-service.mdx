@@ -1,7 +1,7 @@
 ---
 title: "Inventario Service: SKU stock availability check API"
 sidebarTitle: "Inventario Service"
-description: "Inventario Service runs on port 8083, queries MySQL for SKU records, and returns per-SKU stock status including whether each product exists and has available quantity."
+description: "Inventario Service on port 8083 queries MySQL for SKU records and returns per-SKU existence and stock availability, used internally by Order Service."
 ---
 
 Inventario Service is the stock-management microservice in the EduComSer platform. Its sole responsibility is answering the question: "for each of these SKU codes, does the product exist, and does it have stock available?" It exposes a single `GET` endpoint that accepts one or more SKU codes as query parameters and returns a structured response for each one. The service queries a MySQL database, builds an in-memory lookup map, and then evaluates every requested SKU — distinguishing between products that do not exist at all and products that exist but have zero quantity. This fine-grained response allows Order Service to give callers precise error messages rather than a generic "unavailable" response.

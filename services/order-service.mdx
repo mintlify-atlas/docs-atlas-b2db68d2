@@ -1,7 +1,7 @@
 ---
-title: "Order Service: order placement with circuit breaker and retry"
+title: "Order Service: order placement with circuit breaker"
 sidebarTitle: "Order Service"
-description: "Order Service runs on port 8082, validates inventory via WebClient, and uses Resilience4j circuit breaker and retry on all order placement requests backed by MySQL."
+description: "Order Service on port 8082 validates inventory via WebClient and uses Resilience4j circuit breaker and retry on all placement requests, backed by MySQL."
 ---
 
 Order Service is the order-placement microservice in the EduComSer platform. When a client submits a new order, the service first consults Inventario Service over HTTP (using Spring WebClient with Eureka load-balancing) to verify that every requested SKU both exists in the catalog and has available stock. Only if all items pass validation does the service persist the order to MySQL. To guard against Inventario Service being slow or unavailable, every call to `POST /api/order` is protected by a Resilience4j **circuit breaker** and **retry** policy — if failures exceed the configured threshold, the circuit opens and requests are immediately redirected to a fallback response.
@@ -147,6 +147,7 @@ import com.msvc.order.dto.OrderRequest;
 import com.msvc.order.service.OrderService;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import io.github.resilience4j.retry.annotation.Retry;
+import io.github.resilience4j.timelimiter.annotation.TimeLimiter;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 

@@ -1,7 +1,7 @@
 ---
 title: "System architecture and service communication flow"
 sidebarTitle: "Architecture"
-description: "How EduComSer's five microservices communicate: Eureka service registration, API Gateway routing rules, and synchronous WebClient calls from Order to Inventario Service."
+description: "How EduComSer's five services connect: Eureka registration, API Gateway path-based routing, WebClient service calls, and Resilience4j circuit breaking."
 ---
 
 EduComSer follows a classic API-gateway microservices topology. A single Eureka registry acts as the nervous system — every service registers there on startup and resolves peer addresses by logical name rather than hard-coded host/port pairs. All traffic from external clients (browsers, mobile apps, other backends) enters exclusively through the API Gateway on port **8084**, which validates the Keycloak-issued JWT and then load-balances the request to the appropriate downstream service using the `lb://` scheme. Within the cluster, the Order Service calls the Inventario Service directly over an internal `@LoadBalanced` WebClient connection, bypassing the gateway entirely and communicating service-to-service via the names registered in Eureka.

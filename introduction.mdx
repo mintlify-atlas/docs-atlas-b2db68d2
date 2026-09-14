@@ -1,7 +1,7 @@
 ---
-title: "EduComSer Microservices: Spring Boot service mesh for e-commerce"
+title: "EduComSer: Spring Boot Microservices for E-Commerce"
 sidebarTitle: "Introduction"
-description: "EduComSer is a Spring Boot microservices platform with Eureka discovery, Spring Cloud Gateway routing, Keycloak JWT auth, and Resilience4j fault tolerance for e-commerce workloads."
+description: "EduComSer is a Maven multi-module platform on Spring Boot 4.1.1 with Eureka discovery, JWT auth via Keycloak, and Resilience4j fault tolerance."
 ---
 
 EduComSer Microservices is a production-oriented e-commerce backend built as a Maven multi-module project on **Spring Boot 4.1.1** and **Spring Cloud 2025.1.3**. The platform decomposes a traditional monolithic shop into five independently deployable services — a discovery server, an API gateway, and three domain services for products, orders, and inventory. Every external request flows through a single secured entry point where Keycloak-issued JWTs are validated before traffic is load-balanced to the appropriate downstream service. Internally, the Order Service communicates with the Inventario Service via a `@LoadBalanced` WebClient, protected by a Resilience4j circuit breaker and retry policy, ensuring that a transient inventory outage never cascades into a full order-processing failure.

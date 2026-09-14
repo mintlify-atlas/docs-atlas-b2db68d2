@@ -1,7 +1,7 @@
 ---
-title: "Keycloak OAuth2 JWT security configuration"
+title: "Configure Keycloak JWT security for EduComSer gateway"
 sidebarTitle: "Security"
-description: "Configure Keycloak as the OAuth2 authorization server for EduComSer. Set up the realm, create a client, and configure the gateway's JWT issuer URI for token validation."
+description: "Configure Keycloak as the OAuth2 authorization server for EduComSer and set up the API Gateway's JWT resource server for token validation."
 ---
 
 EduComSer uses **Keycloak** as its OAuth2 authorization server. All client requests enter through the **API Gateway** (port `8084`), which is the single point responsible for validating JWT Bearer tokens issued by Keycloak. Once a request passes gateway authentication, it is forwarded to the downstream microservices (Producto, Order, or Inventario) without requiring them to re-validate the token. This centralised approach keeps individual services lean and enforces a consistent security boundary at the edge.

@@ -1,7 +1,7 @@
 ---
-title: "API Reference: EduComSer REST endpoint overview"
+title: "EduComSer API Overview: Gateway routes and authentication"
 sidebarTitle: "Overview"
-description: "All EduComSer REST endpoints are accessed through the API Gateway on port 8084. Every request requires a Keycloak-issued Bearer JWT in the Authorization header."
+description: "EduComSer REST endpoints are routed through the API Gateway on port 8084. Every request requires a Keycloak-issued Bearer JWT in the Authorization header."
 ---
 
 EduComSer exposes four REST endpoints spread across three microservices — **producto-service**, **order-service**, and **inventario-service**. All traffic is routed through a single Spring Cloud Gateway instance running on port **8084**, which enforces OAuth 2.0 / JWT authentication via a Keycloak realm before forwarding requests to the appropriate downstream service registered in Eureka. This means you never call a microservice directly in production; every client request goes through `http://localhost:8084`.

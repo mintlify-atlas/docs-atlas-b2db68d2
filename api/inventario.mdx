@@ -1,7 +1,7 @@
 ---
-title: "REST API endpoint for SKU stock availability check"
+title: "Inventario API: Check SKU stock availability by code"
 sidebarTitle: "Inventario"
-description: "GET /api/inventario checks stock availability for a list of SKU codes. Returns per-SKU status including whether each product exists and whether it has stock available."
+description: "GET /api/inventario checks stock for one or more SKU codes. Returns per-SKU status: whether each product exists and whether it has available stock."
 ---
 
 The inventario-service exposes a single read endpoint — `GET /api/inventario` — that reports stock availability for one or more SKU codes. While this endpoint is called automatically by the order-service during order placement (via Spring WebClient, load-balanced through Eureka), it is also accessible directly through the API Gateway at `http://localhost:8084`. Direct access requires a valid Keycloak Bearer token. This makes the endpoint useful for client-side stock checks, debugging order validation failures, or populating availability indicators in a front-end product catalog.

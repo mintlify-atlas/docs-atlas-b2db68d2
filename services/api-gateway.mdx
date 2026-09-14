@@ -1,7 +1,7 @@
 ---
 title: "API Gateway: unified entry point with JWT authentication"
 sidebarTitle: "API Gateway"
-description: "The API Gateway runs on port 8084 with Spring Cloud Gateway WebFlux. It routes requests to three services by path prefix and enforces Keycloak JWT auth on all routes."
+description: "The API Gateway runs on port 8084, routes requests to three microservices by path prefix, and enforces Keycloak JWT authentication on all routes."
 ---
 
 The API Gateway is the single entry point for all external traffic in the EduComSer platform. It serves two distinct purposes: **routing** and **security**. On the routing side, it receives incoming HTTP requests, matches them against path-prefix predicates, and forwards them to the correct downstream microservice using Eureka-backed load-balanced URIs. On the security side, it acts as an OAuth 2.0 resource server — every request (except internal Eureka traffic) must carry a valid JWT signed by the configured Keycloak realm before it is forwarded.

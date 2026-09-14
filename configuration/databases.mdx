@@ -1,7 +1,7 @@
 ---
 title: "Database configuration for MongoDB and MySQL services"
 sidebarTitle: "Databases"
-description: "Configure MongoDB for Producto Service and MySQL for Order and Inventario services. Covers connection URIs, JPA/Hibernate settings, and schema management with ddl-auto."
+description: "Set up MongoDB for Producto Service and MySQL for Order and Inventario services, including connection URIs, JPA settings, and ddl-auto behavior."
 ---
 
 EduComSer follows a **polyglot persistence** strategy — each service owns its data store and uses the technology that best suits its domain. Producto Service stores product catalog documents in **MongoDB**, while Order Service and Inventario Service manage relational transactional data in **MySQL**. This means each database must be provisioned and configured independently before the corresponding service can start.
@@ -29,7 +29,22 @@ EduComSer follows a **polyglot persistence** strategy — each service owns its 
     The collection name is declared on the `Producto` entity using the `@Document` annotation:
 
     ```java
+    package com.msvc.producto.model;
+
+    import lombok.AllArgsConstructor;
+    import lombok.Builder;
+    import lombok.Data;
+    import lombok.NoArgsConstructor;
+    import org.springframework.data.annotation.Id;
+    import org.springframework.data.mongodb.core.mapping.Document;
+
+    import java.math.BigDecimal;
+
     @Document(value = "producto")
+    @AllArgsConstructor
+    @NoArgsConstructor
+    @Builder
+    @Data
     public class Producto {
         @Id
         private String id;

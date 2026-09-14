@@ -1,7 +1,7 @@
 ---
-title: "REST API endpoint for placing orders with inventory validation"
+title: "Orders API: Place orders with SKU inventory validation"
 sidebarTitle: "Orders"
-description: "POST /api/order places a new order. Order Service validates SKU stock via Inventario Service before saving, with Resilience4j circuit breaker protecting the call."
+description: "POST /api/order places a new order. Validates SKU stock via Inventario Service before saving, with a Resilience4j circuit breaker protecting the call."
 ---
 
 The order-service exposes a single endpoint — `POST /api/order` — for placing new orders. When a request arrives, the service does not immediately save the order. Instead it first calls inventario-service internally to check that every SKU in the order both **exists** in the inventory table and **has available stock** (`cantidad > 0`). Only when all SKUs pass both checks does the order get persisted to the database with an auto-generated `numeroPedido` (UUID). The endpoint is protected by a **Resilience4j circuit breaker** and retry policy named `inventarioService`; if inventario-service is unreachable or the circuit is open, the call short-circuits to a fallback response without ever saving the order. All requests must pass through the API Gateway at `http://localhost:8084` with a valid Keycloak JWT.
@@ -27,6 +27,10 @@ Places a new order after validating stock availability for every line item.
 
 <ParamField body="orderLineItemDtoList" type="array" required>
   A list of one or more order line items to include in the order. Each element describes a single SKU, its unit price, and the quantity requested.
+
+  <ParamField body="id" type="number">
+    Optional line-item identifier (`Long`). May be omitted when creating a new order; the value is not used by the service to persist or reference the order line item.
+  </ParamField>
 
   <ParamField body="codigoSku" type="string" required>
     The SKU code that uniquely identifies the product in the inventory. This value is matched against the `codigoSku` column in the `inventario` table.
