@@ -1,0 +1,104 @@
+---
+title: "REST API endpoint for placing orders with inventory validation"
+sidebarTitle: "Orders"
+description: "POST /api/order places a new order. Order Service validates SKU stock via Inventario Service before saving, with Resilience4j circuit breaker protecting the call."
+---
+
+The order-service exposes a single endpoint — `POST /api/order` — for placing new orders. When a request arrives, the service does not immediately save the order. Instead it first calls inventario-service internally to check that every SKU in the order both **exists** in the inventory table and **has available stock** (`cantidad > 0`). Only when all SKUs pass both checks does the order get persisted to the database with an auto-generated `numeroPedido` (UUID). The endpoint is protected by a **Resilience4j circuit breaker** and retry policy named `inventarioService`; if inventario-service is unreachable or the circuit is open, the call short-circuits to a fallback response without ever saving the order. All requests must pass through the API Gateway at `http://localhost:8084` with a valid Keycloak JWT.
+
+---
+
+## POST /api/order
+
+Places a new order after validating stock availability for every line item.
+
+**Method:** `POST`  
+**Path:** `/api/order`  
+**Success status:** `201 Created`
+
+### Request Headers
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer <your-jwt>` |
+| `Content-Type` | `application/json` |
+
+### Request Body
+
+<ParamField body="orderLineItemDtoList" type="array" required>
+  A list of one or more order line items to include in the order. Each element describes a single SKU, its unit price, and the quantity requested.
+
+  <ParamField body="codigoSku" type="string" required>
+    The SKU code that uniquely identifies the product in the inventory. This value is matched against the `codigoSku` column in the `inventario` table.
+  </ParamField>
+
+  <ParamField body="precio" type="number" required>
+    The unit price of the product at the time of ordering, stored as a `BigDecimal`.
+  </ParamField>
+
+  <ParamField body="cantidad" type="integer" required>
+    The number of units being ordered for this line item.
+  </ParamField>
+</ParamField>
+
+### Example Request
+
+```bash
+curl -X POST http://localhost:8084/api/order \
+  -H "Authorization: Bearer <your-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "orderLineItemDtoList": [
+      {"codigoSku": "laptop-hp-15", "precio": 999.99, "cantidad": 1},
+      {"codigoSku": "mouse-logitech", "precio": 29.99, "cantidad": 2}
+    ]
+  }'
+```
+
+### Response Body
+
+<ResponseField name="mensaje" type="string">
+  A status message describing the outcome of the order request. See the table below for all possible values.
+</ResponseField>
+
+### Response Messages
+
+The value of `mensaje` in the response tells you exactly what happened with the order:
+
+| `mensaje` value | Meaning |
+|-----------------|---------|
+| `"Pedido ordenado con exito"` | All SKUs were found in inventory and had stock greater than 0. The order has been saved successfully. |
+| `"Pedido no procesado. Los siguientes productos no existen: <sku1>, <sku2>"` | One or more SKU codes were not found in the `inventario` table. The order was **not** saved. The missing SKUs are listed in the message. |
+| `"Pedido no procesado. Los siguientes productos no tienen stock: <sku1>, <sku2>"` | All SKUs exist in inventory but one or more have a `cantidad` of 0. The order was **not** saved. The out-of-stock SKUs are listed in the message. |
+
+### Example Responses
+
+**All items in stock — order saved:**
+
+```json
+{"mensaje": "Pedido ordenado con exito"}
+```
+
+**One or more SKUs do not exist:**
+
+```json
+{"mensaje": "Pedido no procesado. Los siguientes productos no existen: nonexistent-sku"}
+```
+
+**One or more SKUs exist but have no stock:**
+
+```json
+{"mensaje": "Pedido no procesado. Los siguientes productos no tienen stock: mouse-logitech"}
+```
+
+### Circuit Breaker Fallback
+
+If the inventario-service is unavailable or the Resilience4j circuit breaker for `inventarioService` is in the open state, the endpoint bypasses the service call and returns the following fallback response immediately:
+
+```json
+{"mensaje": "Oops! Ha ocurrido un error al realizar el pedido"}
+```
+
+<Warning>
+  If you receive the fallback message `"Oops! Ha ocurrido un error al realizar el pedido"`, the inventario-service may be down, experiencing high latency, or the circuit breaker has tripped open due to repeated failures. The order was **not** saved. Check the health of the inventario-service and the Resilience4j circuit breaker state before retrying.
+</Warning>

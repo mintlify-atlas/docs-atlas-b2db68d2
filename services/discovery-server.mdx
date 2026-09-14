@@ -1,0 +1,89 @@
+---
+title: "Discovery Server: Eureka service registry for microservices"
+sidebarTitle: "Discovery Server"
+description: "The EduComSer Discovery Server runs Netflix Eureka on port 8761. All services auto-register on startup and use load-balanced URIs for inter-service calls."
+---
+
+The Discovery Server is the backbone of the EduComSer microservices platform. It runs a Netflix Eureka registry that every other service in the system registers with on startup. Once registered, services can locate each other by logical name rather than hard-coded host and port, enabling transparent client-side load balancing through `lb://` URIs in the API Gateway. Because every other service depends on the registry being reachable, the Discovery Server must always be the first process you start.
+
+## How It Works
+
+When the application starts, the `@EnableEurekaServer` annotation activates the embedded Eureka registry. The server itself does **not** register as a client and does **not** attempt to fetch the registry from another peer — it is the single source of truth for service locations in this project.
+
+```java
+package com.msvc.discovery;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.cloud.netflix.eureka.server.EnableEurekaServer;
+
+@SpringBootApplication
+@EnableEurekaServer
+public class DiscoveryServerApplication {
+
+    public static void main(String[] args) {
+        SpringApplication.run(DiscoveryServerApplication.class, args);
+    }
+
+}
+```
+
+## Configuration
+
+The full `application.properties` for the Discovery Server is shown below, with each property explained in the table that follows.
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ===============
+server.port=8761
+spring.application.name=discovery-server
+
+# ========== CONFIGURACION DEL REGISTRY EUREKA ==========
+eureka.instance.hostname=localhost
+eureka.client.register-with-eureka=false
+eureka.client.fetch-registry=false
+```
+
+| Property | Value | Explanation |
+|---|---|---|
+| `server.port` | `8761` | The standard Eureka port. All client services point their `defaultZone` at this port. |
+| `spring.application.name` | `discovery-server` | Identifies this application in logs and in the Eureka dashboard. |
+| `eureka.instance.hostname` | `localhost` | The hostname Eureka advertises for itself. Clients will resolve the registry at this address. |
+| `eureka.client.register-with-eureka` | `false` | Prevents the server from registering itself as a client in its own registry. |
+| `eureka.client.fetch-registry` | `false` | Prevents the server from trying to fetch service listings from another registry peer. |
+
+## Client Registration
+
+Every other service in the platform registers itself by adding the following property to its own `application.properties`:
+
+```properties
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+```
+
+On startup, the client service sends its metadata (name, host, port, health indicator URL) to this endpoint. The registry stores this information and makes it available to all other registered clients, which can then resolve `lb://service-name` URIs through Spring Cloud LoadBalancer.
+
+## Eureka Dashboard
+
+Once the server is running you can inspect all registered instances in the browser:
+
+```bash
+http://localhost:8761
+```
+
+The dashboard shows each service's application name, instance ID, status (`UP` / `DOWN`), and the last heartbeat timestamp.
+
+## Maven Dependency
+
+The Discovery Server requires a single Spring Cloud dependency in its `pom.xml`:
+
+```xml
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-server</artifactId>
+</dependency>
+```
+
+The BOM version used in this project is `2025.1.3`, declared in `<dependencyManagement>`.
+
+<Note>
+  The Discovery Server must be started **before** any other service. If it is not running when a client starts, the client will retry registration on a backoff schedule but will not be reachable by other services until it appears in the registry.
+</Note>

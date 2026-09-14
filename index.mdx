@@ -1,20 +1,63 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "EduComSer Microservices"
+sidebarTitle: "Home"
+description: "A Spring Boot microservices platform with Eureka service discovery, Spring Cloud Gateway, Keycloak OAuth2 security, and Resilience4j fault tolerance."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+EduComSer Microservices is a Java-based backend platform composed of four independently deployable Spring Boot services orchestrated behind a single API Gateway. It is designed to handle product catalogs, order placement, and inventory stock verification — all protected by Keycloak JWT authentication and resilient to downstream failures through circuit breaking and retry logic.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Clone, configure, and run all services in minutes with step-by-step instructions.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how the gateway, discovery server, and services interconnect.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full endpoint documentation for Products, Orders, and Inventory APIs.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/databases">
+    Configure databases, security, and resilience settings for each service.
+  </Card>
+</CardGroup>
+
+## Services at a Glance
+
+<CardGroup cols={2}>
+  <Card title="Discovery Server" icon="satellite-dish" href="/services/discovery-server">
+    Netflix Eureka registry — all services self-register and resolve via load-balanced URIs.
+  </Card>
+  <Card title="API Gateway" icon="shield-halved" href="/services/api-gateway">
+    Spring Cloud Gateway with JWT enforcement, routing to all three business services.
+  </Card>
+  <Card title="Producto Service" icon="box" href="/services/producto-service">
+    Create and list products stored in MongoDB. Exposes `POST /api/producto` and `GET /api/producto`.
+  </Card>
+  <Card title="Order Service" icon="cart-shopping" href="/services/order-service">
+    Place orders with inventory validation, circuit breaker, and retry via Resilience4j.
+  </Card>
+  <Card title="Inventario Service" icon="warehouse" href="/services/inventario-service">
+    Check SKU stock availability. Called internally by Order Service before confirming any order.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="Start the Discovery Server">
+    Launch the Eureka registry on port `8761` so all other services can register.
+  </Step>
+  <Step title="Start the Business Services">
+    Start Producto Service (8081), Order Service (8082), and Inventario Service (8083) — each registers with Eureka automatically.
+  </Step>
+  <Step title="Start the API Gateway">
+    The gateway on port `8084` routes incoming requests to services by path prefix and enforces JWT authentication via Keycloak.
+  </Step>
+  <Step title="Obtain a JWT and Call the API">
+    Authenticate against your Keycloak realm, obtain a Bearer token, and call any endpoint through the gateway.
+  </Step>
+</Steps>
 
 <Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
+  All API calls must go through the API Gateway on port `8084`. Direct service ports are for local development only and bypass authentication.
 </Tip>
-
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>

@@ -1,0 +1,104 @@
+---
+title: "Resilience4j circuit breaker and retry configuration"
+sidebarTitle: "Resilience"
+description: "Configure Resilience4j circuit breaker and retry in Order Service to handle Inventario Service failures. Covers sliding window, failure rate threshold, wait duration, and retry attempts."
+---
+
+Order Service calls Inventario Service synchronously via Feign to check stock availability before placing an order. This synchronous dependency means that if Inventario Service becomes slow or unresponsive, Order Service requests will queue up and eventually time out — cascading the failure across the system. To guard against this, Order Service implements two complementary fault-tolerance patterns from **Resilience4j**: a **circuit breaker** that short-circuits calls to a failing service and a **retry** mechanism that automatically re-attempts transient failures before giving up.
+
+## How the patterns work
+
+**Circuit Breaker** monitors the outcomes of recent calls to Inventario Service. When the failure rate exceeds a configured threshold, it *opens* the circuit, causing all subsequent calls to immediately invoke a fallback method instead of hitting the downstream service. After a wait period the circuit moves to *half-open*, allowing a limited number of probe calls through. If those succeed, the circuit closes and normal operation resumes.
+
+**Retry** operates as a first line of defence for transient errors. Before the circuit breaker counts a call as a failure, Resilience4j will retry the call up to the configured number of attempts with a pause between each. Only if all retries are exhausted does the failure count toward the circuit breaker's sliding window.
+
+## Configuration
+
+Both patterns are configured in `order-service/src/main/resources/application.properties`. Feign circuit breaker integration is also enabled:
+
+```properties
+# ==========  FEIGN + CIRCUIT BREAKER
+feign.circuitbreaker.enabled=true
+
+# ========== RESILIENCE4J - CIRCUIT BREAKER
+resilience4j.circuitbreaker.instances.inventarioService.registerHealthIndicator=true
+resilience4j.circuitbreaker.instances.inventarioService.eventConsumerBufferSize=10
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowType=COUNT_BASED
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowSize=5
+resilience4j.circuitbreaker.instances.inventarioService.failureRateThreshold=50
+resilience4j.circuitbreaker.instances.inventarioService.waitDurationInOpenState=5s
+resilience4j.circuitbreaker.instances.inventarioService.permittedNumberOfCallsInHalfOpenState=3
+resilience4j.circuitbreaker.instances.inventarioService.automaticTransitionFromOpenToHalfOpenEnabled=true
+resilience4j.circuitbreaker.instances.inventarioService.minimumNumberOfCalls=5
+
+# ========== RESILIENCE4J - RETRY
+resilience4j.retry.instances.inventarioService.max-attempts=3
+resilience4j.retry.instances.inventarioService.wait-duration=5s
+```
+
+## Property reference
+
+| Property | Value | Meaning |
+|---|---|---|
+| `slidingWindowType` | `COUNT_BASED` | Track outcomes of the last N individual calls (as opposed to time-based windows) |
+| `slidingWindowSize` | `5` | Evaluate the most recent 5 calls when computing the failure rate |
+| `failureRateThreshold` | `50` | Open the circuit when 50% or more of the tracked calls have failed |
+| `waitDurationInOpenState` | `5s` | Keep the circuit open for 5 seconds before transitioning to half-open |
+| `permittedNumberOfCallsInHalfOpenState` | `3` | Allow 3 probe calls through in half-open state to decide whether to close the circuit |
+| `automaticTransitionFromOpenToHalfOpenEnabled` | `true` | Automatically move from open to half-open after the wait duration without requiring an incoming request |
+| `minimumNumberOfCalls` | `5` | Require at least 5 calls before the circuit breaker evaluates the failure rate |
+| `eventConsumerBufferSize` | `10` | Buffer size for circuit breaker events (used by health indicators and metrics) |
+| `max-attempts` | `3` | Retry the call up to 3 times total (first attempt + 2 retries) |
+| `wait-duration` | `5s` | Wait 5 seconds between retry attempts |
+
+## Controller annotations and fallback
+
+The circuit breaker and retry patterns are applied directly on the `realizarPedido` endpoint in `OrderController`:
+
+```java
+@PostMapping
+@ResponseStatus(HttpStatus.CREATED)
+@CircuitBreaker(name = "inventarioService", fallbackMethod = "fallBackMethod")
+@Retry(name = "inventarioService")
+public Map<String, String> realizarPedido(@RequestBody OrderRequest orderRequest) {
+    String message = orderService.placeOrder(orderRequest);
+    return Map.of("mensaje", message);
+}
+```
+
+Both annotations reference the `inventarioService` instance name, which must match the keys used in `application.properties`. When all retries are exhausted or the circuit is open, Resilience4j calls the fallback method automatically:
+
+```java
+public Map<String, String> fallBackMethod(OrderRequest orderRequest, Throwable throwable) {
+    return Map.of("mensaje", "Oops! Ha ocurrido un error al realizar el pedido");
+}
+```
+
+The fallback receives the original request object and the throwable that caused the failure, allowing you to log the root cause or return a contextual error message to the caller.
+
+## Maven dependency
+
+The Resilience4j integration is provided by the Spring Cloud circuit breaker starter, declared in `order-service/pom.xml`:
+
+<Note>
+  The `spring-cloud-starter-circuitbreaker-resilience4j` dependency bundles Resilience4j together with the Spring Cloud Circuit Breaker abstraction. This is the only module that needs the dependency — Inventario Service does not need it since the fault-tolerance logic lives in the calling service (Order Service).
+
+  ```xml
+  <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+  </dependency>
+  ```
+</Note>
+
+## Health indicators
+
+<Tip>
+  Because `registerHealthIndicator=true` is set on the `inventarioService` circuit breaker instance, Spring Boot Actuator exposes the circuit breaker's current state (`CLOSED`, `OPEN`, or `HALF_OPEN`) through the `/actuator/health` endpoint. Order Service already includes `spring-boot-starter-actuator` in its dependencies. To see the circuit breaker state at runtime, hit:
+
+  ```bash
+  curl http://localhost:8082/actuator/health
+  ```
+
+  This is invaluable during testing: trigger repeated failures against Inventario Service and watch the circuit breaker transition from `CLOSED` → `OPEN` → `HALF_OPEN` → `CLOSED` in the health response.
+</Tip>

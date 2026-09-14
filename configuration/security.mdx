@@ -1,0 +1,132 @@
+---
+title: "Keycloak OAuth2 JWT security configuration"
+sidebarTitle: "Security"
+description: "Configure Keycloak as the OAuth2 authorization server for EduComSer. Set up the realm, create a client, and configure the gateway's JWT issuer URI for token validation."
+---
+
+EduComSer uses **Keycloak** as its OAuth2 authorization server. All client requests enter through the **API Gateway** (port `8084`), which is the single point responsible for validating JWT Bearer tokens issued by Keycloak. Once a request passes gateway authentication, it is forwarded to the downstream microservices (Producto, Order, or Inventario) without requiring them to re-validate the token. This centralised approach keeps individual services lean and enforces a consistent security boundary at the edge.
+
+## Keycloak setup
+
+<Steps>
+  <Step title="Install and start Keycloak">
+    Download and run Keycloak. By default it listens on port `8080`:
+
+    ```bash
+    # Using the Keycloak distribution (standalone mode)
+    bin/kc.sh start-dev
+    ```
+
+    Open the admin console at `http://127.0.0.1:8080` and log in with your administrator credentials.
+  </Step>
+
+  <Step title="Create the realm">
+    In the admin console, create a new realm with the following name:
+
+    ```
+    proyecto02-microservicios-realm
+    ```
+
+    This realm name is hardcoded in the API Gateway's `application.properties` and must match exactly.
+  </Step>
+
+  <Step title="Create a client">
+    Inside the `proyecto02-microservicios-realm` realm, create a new client — for example, `spring-cloud-client`. Configure it as a **confidential** client with **client credentials** enabled so it can issue tokens via the `password` or `client_credentials` grant type.
+
+    Note down the **Client ID** and **Client Secret** — you will need them when requesting tokens.
+  </Step>
+
+  <Step title="Add roles (optional)">
+    If your application requires role-based access control, add realm roles or client roles inside Keycloak and assign them to users as needed. The current gateway configuration requires only that the user is **authenticated** (any valid JWT is accepted); role enforcement can be layered on top.
+  </Step>
+
+  <Step title="Obtain a JWT token">
+    Use the token endpoint for `proyecto02-microservicios-realm` to obtain a Bearer token via the resource owner password grant:
+
+    ```bash
+    curl -X POST http://127.0.0.1:8080/realms/proyecto02-microservicios-realm/protocol/openid-connect/token \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "grant_type=password&client_id=<your-client-id>&client_secret=<your-client-secret>&username=<user>&password=<pass>"
+    ```
+
+    The response contains an `access_token` field. Copy that value — it is the JWT you will pass in subsequent API requests.
+  </Step>
+</Steps>
+
+## API Gateway configuration
+
+The API Gateway declares Keycloak as its JWT issuer using the following property in `application.properties`:
+
+```properties
+# ===== PUNTO DE ENTRADA PARA CLIENTES KEYCLOAK
+spring.security.oauth2.resourceserver.jwt.issuer-uri=http://127.0.0.1:8080/realms/proyecto02-microservicios-realm
+```
+
+At startup, Spring Security fetches the OpenID Connect discovery document from this URI to obtain the JWKS (public keys) used to verify token signatures.
+
+<Warning>
+  The `issuer-uri` value in the gateway configuration **must exactly match** the `iss` claim inside the JWT tokens issued by Keycloak. If the hostname or realm name differs by even a single character, all token validation will fail with a `401 Unauthorized` response.
+</Warning>
+
+## SecurityConfig
+
+The security rules are defined in `SecurityConfig.java` inside the API Gateway module:
+
+```java
+package com.api.gateway.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.SecurityWebFilterChain;
+
+import static org.springframework.security.config.Customizer.withDefaults;
+
+@Configuration
+@EnableWebFluxSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityWebFilterChain springSecurityWebFilterChain(ServerHttpSecurity http) {
+        return http
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/eureka/**").permitAll()
+                        .anyExchange().authenticated()
+                )
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(withDefaults())
+                )
+                .build();
+    }
+}
+```
+
+### Rule-by-rule explanation
+
+<CardGroup cols={2}>
+  <Card title="CSRF disabled" icon="shield-xmark">
+    `.csrf(CsrfSpec::disable)` — CSRF protection is turned off because the API is stateless (no session cookies). REST clients using Bearer tokens are not vulnerable to CSRF attacks.
+  </Card>
+  <Card title="/eureka/** permitted" icon="circle-check">
+    `.pathMatchers("/eureka/**").permitAll()` — Eureka heartbeat and registration traffic between the gateway and the service registry is allowed without a token, as it is internal infrastructure communication.
+  </Card>
+  <Card title="All other exchanges authenticated" icon="lock">
+    `.anyExchange().authenticated()` — Every request to any other path (product, order, or inventory APIs) must carry a valid JWT. Unauthenticated requests receive a `401 Unauthorized` response.
+  </Card>
+  <Card title="OAuth2 resource server (JWT)" icon="key">
+    `.oauth2ResourceServer(oauth2 -> oauth2.jwt(withDefaults()))` — Configures the gateway as an OAuth2 resource server that validates incoming Bearer tokens as JWTs using the JWKS published by the Keycloak issuer URI.
+  </Card>
+</CardGroup>
+
+## Calling the API with a token
+
+Once you have a JWT from Keycloak, pass it in the `Authorization` header of every request routed through the gateway:
+
+```bash
+curl -X GET http://localhost:8084/api/producto \
+  -H "Authorization: Bearer <your-jwt-token>"
+```
+
+Replace `<your-jwt-token>` with the `access_token` value returned by the Keycloak token endpoint. Requests without this header, or with an expired or tampered token, will be rejected at the gateway with a `401 Unauthorized` error.

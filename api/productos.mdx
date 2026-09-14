@@ -1,0 +1,111 @@
+---
+title: "REST API endpoints for product catalog management"
+sidebarTitle: "Productos"
+description: "POST /api/producto creates a product in MongoDB; GET /api/producto returns all products. Both require a valid Keycloak Bearer token via the API Gateway."
+---
+
+The producto-service manages the product catalog and exposes two endpoints under the `/api/producto` path. `POST /api/producto` persists a new product document to MongoDB and returns no body on success. `GET /api/producto` retrieves the full list of stored products as a JSON array. Both endpoints are accessed through the API Gateway at `http://localhost:8084` and require a valid Keycloak-issued Bearer token in the `Authorization` header.
+
+---
+
+## POST /api/producto
+
+Creates a new product and stores it in the MongoDB `producto` collection.
+
+**Method:** `POST`  
+**Path:** `/api/producto`  
+**Success status:** `201 Created` (no response body)
+
+### Request Headers
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer <your-jwt>` |
+| `Content-Type` | `application/json` |
+
+### Request Body
+
+<ParamField body="nombre" type="string" required>
+  The display name of the product.
+</ParamField>
+
+<ParamField body="descripcion" type="string" required>
+  A human-readable description of the product.
+</ParamField>
+
+<ParamField body="precio" type="number" required>
+  The price of the product represented as a `BigDecimal`. Use a decimal literal (e.g. `999.99`) to preserve precision.
+</ParamField>
+
+### Example Request
+
+```bash
+curl -X POST http://localhost:8084/api/producto \
+  -H "Authorization: Bearer <your-jwt>" \
+  -H "Content-Type: application/json" \
+  -d '{"nombre": "Laptop HP", "descripcion": "15 inch laptop", "precio": 999.99}'
+```
+
+### Response
+
+On success the endpoint responds with HTTP **201 Created** and an empty body. No `Location` header or created-resource payload is returned.
+
+<Tip>
+  To confirm the product was saved, follow this call with a `GET /api/producto` request and look for the new entry in the returned array.
+</Tip>
+
+---
+
+## GET /api/producto
+
+Returns a JSON array containing every product stored in MongoDB.
+
+**Method:** `GET`  
+**Path:** `/api/producto`  
+**Success status:** `200 OK`
+
+### Request Headers
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer <your-jwt>` |
+
+### Response Body
+
+An array of product objects. Each object contains the following fields:
+
+<ResponseField name="id" type="string">
+  The MongoDB-generated `ObjectId` for the product document, serialised as a 24-character hex string.
+</ResponseField>
+
+<ResponseField name="nombre" type="string">
+  The display name of the product.
+</ResponseField>
+
+<ResponseField name="descripcion" type="string">
+  The human-readable description of the product.
+</ResponseField>
+
+<ResponseField name="precio" type="number">
+  The price of the product as a `BigDecimal` value.
+</ResponseField>
+
+### Example Request
+
+```bash
+curl -X GET http://localhost:8084/api/producto \
+  -H "Authorization: Bearer <your-jwt>"
+```
+
+### Example Response
+
+```json
+[
+  {
+    "id": "64f3a1b2c3d4e5f6a7b8c9d0",
+    "nombre": "Laptop HP",
+    "descripcion": "15 inch laptop",
+    "precio": 999.99
+  }
+]
+```

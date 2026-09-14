@@ -1,0 +1,180 @@
+---
+title: "Producto Service: product catalog API backed by MongoDB"
+sidebarTitle: "Producto Service"
+description: "Producto Service runs on port 8081 and exposes two REST endpoints for creating and listing products, persisted in a MongoDB collection named 'producto'."
+---
+
+Producto Service is the product catalog microservice in the EduComSer platform. It is responsible for persisting and retrieving product records. Each product has a name, a description, and a price. Records are stored in a MongoDB database named `producto-service` inside a collection called `producto`. The service registers itself with the Eureka Discovery Server on startup so that the API Gateway can route `/api/producto/**` traffic to it using a load-balanced URI.
+
+## Data Model
+
+### `Producto` — MongoDB Document
+
+The `Producto` class maps directly to a document in the `producto` MongoDB collection. MongoDB generates the `id` field as a 24-character hexadecimal string (ObjectId) when the document is first inserted.
+
+```java
+package com.msvc.producto.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.mapping.Document;
+
+import java.math.BigDecimal;
+
+@Document(value = "producto")   // Maps to the "producto" collection in MongoDB
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@Data
+public class Producto {
+    @Id
+    private String id;          // MongoDB-generated ObjectId string
+    private String nombre;      // Product name
+    private String descripcion; // Product description
+    private BigDecimal precio;  // Product price (arbitrary-precision decimal)
+}
+```
+
+## DTOs
+
+### `ProductoRequest` — inbound payload
+
+Used as the request body for `POST /api/producto`. The `id` field is intentionally absent — MongoDB assigns it automatically.
+
+```java
+package com.msvc.producto.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@Data
+public class ProductoRequest {
+    private String nombre;
+    private String descripcion;
+    private BigDecimal precio;
+}
+```
+
+### `ProductoResponse` — outbound payload
+
+Returned by `GET /api/producto`. Includes the MongoDB-generated `id` along with the product fields.
+
+```java
+package com.msvc.producto.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+@Data
+public class ProductoResponse {
+    private String id;          // MongoDB-generated ObjectId string
+    private String nombre;
+    private String descripcion;
+    private BigDecimal precio;
+}
+```
+
+<Note>
+  The `id` field in `ProductoResponse` is a MongoDB-generated string (24-character hexadecimal ObjectId). It is never supplied by the client and will always be non-null in a successful GET response.
+</Note>
+
+## REST Endpoints
+
+### `POST /api/producto` — Create a product
+
+Accepts a `ProductoRequest` body, persists a new `Producto` document, and returns `201 CREATED` with no response body.
+
+| Detail | Value |
+|---|---|
+| Method | `POST` |
+| Path | `/api/producto` |
+| Request body | `ProductoRequest` (JSON) |
+| Response status | `201 CREATED` |
+| Response body | _(empty)_ |
+
+### `GET /api/producto` — List all products
+
+Returns a JSON array of all `ProductoResponse` objects currently stored in the collection.
+
+| Detail | Value |
+|---|---|
+| Method | `GET` |
+| Path | `/api/producto` |
+| Request body | _(none)_ |
+| Response status | `200 OK` |
+| Response body | `List<ProductoResponse>` (JSON array) |
+
+## Controller
+
+```java
+package com.msvc.producto.controller;
+
+import com.msvc.producto.dto.ProductoRequest;
+import com.msvc.producto.dto.ProductoResponse;
+import com.msvc.producto.service.ProductoService;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/producto")
+public class ProductoController {
+
+    private final ProductoService productoService;
+
+    public ProductoController(ProductoService productoService) {
+        this.productoService = productoService;
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public void guardarProducto(@RequestBody ProductoRequest productoRequest) {
+        productoService.createProducto(productoRequest);
+    }
+
+    @GetMapping
+    @ResponseStatus(HttpStatus.OK)
+    public List<ProductoResponse> listarProductos() {
+        return productoService.getAllProductos();
+    }
+}
+```
+
+## Configuration
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ==============
+server.port=8081
+spring.application.name=producto-service
+
+# ========== CONFIGURACION DE LA BASE DE DATOS ==========
+spring.data.mongodb.uri=mongodb://localhost:27017/producto-service
+
+# ========== CONFIGURACION DE EUREKA ==========
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+```
+
+| Property | Value | Notes |
+|---|---|---|
+| `server.port` | `8081` | The port this service listens on. |
+| `spring.application.name` | `producto-service` | The name used for Eureka registration and for the Gateway's `lb://producto-service` URI. |
+| `spring.data.mongodb.uri` | `mongodb://localhost:27017/producto-service` | Points to a local MongoDB instance; the database `producto-service` is created automatically if it does not exist. |
+| `eureka.client.serviceUrl.defaultZone` | `http://localhost:8761/eureka` | The Eureka server endpoint this service registers with. |

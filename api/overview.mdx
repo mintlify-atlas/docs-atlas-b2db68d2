@@ -1,0 +1,79 @@
+---
+title: "API Reference: EduComSer REST endpoint overview"
+sidebarTitle: "Overview"
+description: "All EduComSer REST endpoints are accessed through the API Gateway on port 8084. Every request requires a Keycloak-issued Bearer JWT in the Authorization header."
+---
+
+EduComSer exposes four REST endpoints spread across three microservices — **producto-service**, **order-service**, and **inventario-service**. All traffic is routed through a single Spring Cloud Gateway instance running on port **8084**, which enforces OAuth 2.0 / JWT authentication via a Keycloak realm before forwarding requests to the appropriate downstream service registered in Eureka. This means you never call a microservice directly in production; every client request goes through `http://localhost:8084`.
+
+## Base URL
+
+```
+http://localhost:8084
+```
+
+## Authentication
+
+Every protected endpoint requires a valid JWT issued by the configured Keycloak realm. Pass the token as a Bearer credential in the `Authorization` header:
+
+```
+Authorization: Bearer <jwt-token>
+```
+
+The gateway is configured as an OAuth 2.0 resource server and validates tokens against the following issuer URI:
+
+```
+http://127.0.0.1:8080/realms/proyecto02-microservicios-realm
+```
+
+Requests that arrive without a valid token receive a `401 Unauthorized` response from the gateway before they reach any microservice.
+
+## Quick Example
+
+The following curl command lists all products. It demonstrates the pattern every API call follows — base URL on port 8084, the route path recognised by the gateway, and the `Authorization` header carrying the JWT:
+
+```bash
+curl -X GET http://localhost:8084/api/producto \
+  -H "Authorization: Bearer <your-jwt>"
+```
+
+## Endpoint Summary
+
+All routes are configured in `api-gateway/src/main/resources/application.properties` and are load-balanced (`lb://`) via Eureka service discovery.
+
+| Method | Path | Service | Description |
+|--------|------|---------|-------------|
+| `POST` | `/api/producto` | producto-service | Create a product |
+| `GET` | `/api/producto` | producto-service | List all products |
+| `POST` | `/api/order` | order-service | Place an order |
+| `GET` | `/api/inventario` | inventario-service | Check SKU stock |
+
+<Note>
+  The `/eureka/**` path is configured as **permit-all** — no Bearer token is required to access it. This path exposes the Eureka Service Registry dashboard, which you can reach at `http://localhost:8761` (direct) or through the gateway without authentication.
+</Note>
+
+## Explore the Endpoints
+
+<CardGroup cols={2}>
+  <Card
+    title="Productos"
+    icon="box"
+    href="/api/productos"
+  >
+    Create and list products stored in MongoDB via `POST /api/producto` and `GET /api/producto`.
+  </Card>
+  <Card
+    title="Orders"
+    icon="cart-shopping"
+    href="/api/orders"
+  >
+    Place a new order with automatic inventory validation via `POST /api/order`. Protected by a Resilience4j circuit breaker.
+  </Card>
+  <Card
+    title="Inventario"
+    icon="warehouse"
+    href="/api/inventario"
+  >
+    Query stock availability for one or more SKU codes via `GET /api/inventario`.
+  </Card>
+</CardGroup>

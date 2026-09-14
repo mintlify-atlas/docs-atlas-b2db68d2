@@ -1,0 +1,282 @@
+---
+title: "Order Service: order placement with circuit breaker and retry"
+sidebarTitle: "Order Service"
+description: "Order Service runs on port 8082, validates inventory via WebClient, and uses Resilience4j circuit breaker and retry on all order placement requests backed by MySQL."
+---
+
+Order Service is the order-placement microservice in the EduComSer platform. When a client submits a new order, the service first consults Inventario Service over HTTP (using Spring WebClient with Eureka load-balancing) to verify that every requested SKU both exists in the catalog and has available stock. Only if all items pass validation does the service persist the order to MySQL. To guard against Inventario Service being slow or unavailable, every call to `POST /api/order` is protected by a Resilience4j **circuit breaker** and **retry** policy — if failures exceed the configured threshold, the circuit opens and requests are immediately redirected to a fallback response.
+
+## Data Model
+
+### `Order` — JPA Entity
+
+```java
+package com.msvc.order.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+import java.util.List;
+
+@Entity
+@Table(name = "orders")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class Order {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;                                    // Auto-incremented primary key
+
+    private String numeroPedido;                        // UUID string assigned at placement time
+
+    @OneToMany(cascade = CascadeType.ALL)
+    private List<OrderLineItems> orderLineItems;        // Child line items (cascade ALL)
+}
+```
+
+### `OrderLineItems` — JPA Entity
+
+```java
+package com.msvc.order.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+import java.math.BigDecimal;
+
+@Entity
+@Table(name = "order_line_items")
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+public class OrderLineItems {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;            // Auto-incremented primary key
+    private String codigoSku;   // SKU code that identifies the product in Inventario Service
+    private BigDecimal precio;  // Unit price at the time of order
+    private Integer cantidad;   // Quantity ordered
+}
+```
+
+## DTOs
+
+### `OrderRequest` — inbound payload
+
+```java
+package com.msvc.order.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+public class OrderRequest {
+    private List<OrderLineItemDto> orderLineItemDtoList;
+}
+```
+
+### `OrderLineItemDto`
+
+```java
+package com.msvc.order.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+
+@Data
+@Builder
+@AllArgsConstructor
+@NoArgsConstructor
+public class OrderLineItemDto {
+    private Long id;
+    private String codigoSku;
+    private BigDecimal precio;
+    private Integer cantidad;
+}
+```
+
+## REST Endpoint
+
+### `POST /api/order` — Place an order
+
+| Detail | Value |
+|---|---|
+| Method | `POST` |
+| Path | `/api/order` |
+| Request body | `OrderRequest` (JSON) |
+| Response status | `201 CREATED` |
+| Response body | `{ "mensaje": "<result message>" }` |
+
+**Example request body:**
+
+```json
+{
+  "orderLineItemDtoList": [
+    { "codigoSku": "iphone_15", "precio": 999.99, "cantidad": 1 },
+    { "codigoSku": "samsung_s23", "precio": 849.99, "cantidad": 2 }
+  ]
+}
+```
+
+## Controller
+
+The controller applies both `@CircuitBreaker` and `@Retry` from Resilience4j. Both annotations reference the named instance `inventarioService`, which is configured in `application.properties`. A `fallBackMethod` is declared to handle the case when the circuit is open or all retry attempts are exhausted.
+
+```java
+package com.msvc.order.controller;
+
+import com.msvc.order.dto.OrderRequest;
+import com.msvc.order.service.OrderService;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/order")
+public class OrderController {
+
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    @CircuitBreaker(name = "inventarioService", fallbackMethod = "fallBackMethod")
+    @Retry(name = "inventarioService")
+    public Map<String, String> realizarPedido(@RequestBody OrderRequest orderRequest) {
+        String message = orderService.placeOrder(orderRequest);
+        return Map.of("mensaje", message);
+    }
+
+    // Called automatically when the circuit is open or retries are exhausted
+    public Map<String, String> fallBackMethod(OrderRequest orderRequest, Throwable throwable) {
+        return Map.of("mensaje", "Oops! Ha ocurrido un error al realizar el pedido");
+    }
+}
+```
+
+## Order Placement Logic
+
+`OrderService.placeOrder()` executes the following steps in order:
+
+<Steps>
+  <Step title="Assign a unique order number">
+    A `UUID.randomUUID().toString()` is generated and stored in `order.numeroPedido`. This gives every order a human-readable, globally unique identifier independent of the auto-incremented database ID.
+  </Step>
+  <Step title="Map DTOs to entities">
+    Each `OrderLineItemDto` in the request is converted to an `OrderLineItems` entity. The list is set on the `Order` object, establishing the `@OneToMany` relationship.
+  </Step>
+  <Step title="Extract SKU codes">
+    All `codigoSku` values are collected into a `List<String>` for the inventory check.
+  </Step>
+  <Step title="Query Inventario Service">
+    A synchronous `WebClient` GET request is made to `http://inventario-service/api/inventario?codigoSku=...` (Eureka resolves `inventario-service` to an actual host and port). The response is deserialized as an `InventarioResponse[]` array.
+  </Step>
+  <Step title="Check for non-existent products">
+    Any response entry where `existe == false` is collected into a list. If that list is non-empty, the method returns early with a message listing the missing SKUs and the order is **not** saved.
+  </Step>
+  <Step title="Check for out-of-stock products">
+    Any response entry where `existe == true` but `inStock == false` is collected. If that list is non-empty, the method returns early with a message listing the out-of-stock SKUs and the order is **not** saved.
+  </Step>
+  <Step title="Save the order">
+    Only if every SKU exists and has available stock is `orderRepository.save(order)` called. The method returns `"Pedido ordenado con exito"`.
+  </Step>
+</Steps>
+
+## Resilience4j Configuration
+
+```properties
+# ========== RESILIENCE4J - CIRCUIT BREAKER
+resilience4j.circuitbreaker.instances.inventarioService.registerHealthIndicator=true
+resilience4j.circuitbreaker.instances.inventarioService.eventConsumerBufferSize=10
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowType=COUNT_BASED
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowSize=5
+resilience4j.circuitbreaker.instances.inventarioService.failureRateThreshold=50
+resilience4j.circuitbreaker.instances.inventarioService.waitDurationInOpenState=5s
+resilience4j.circuitbreaker.instances.inventarioService.permittedNumberOfCallsInHalfOpenState=3
+resilience4j.circuitbreaker.instances.inventarioService.automaticTransitionFromOpenToHalfOpenEnabled=true
+resilience4j.circuitbreaker.instances.inventarioService.minimumNumberOfCalls=5
+
+# ========== RESILIENCE4J - RETRY
+resilience4j.retry.instances.inventarioService.max-attempts=3
+resilience4j.retry.instances.inventarioService.wait-duration=5s
+```
+
+| Property | Value | Explanation |
+|---|---|---|
+| `slidingWindowType` | `COUNT_BASED` | Failure rate is calculated over the last N calls (not a time window). |
+| `slidingWindowSize` | `5` | The last 5 calls form the sliding window. |
+| `minimumNumberOfCalls` | `5` | The circuit will not open until at least 5 calls have been recorded. |
+| `failureRateThreshold` | `50` | If ≥ 50 % of the last 5 calls fail, the circuit transitions to OPEN. |
+| `waitDurationInOpenState` | `5s` | The circuit stays OPEN for 5 seconds before moving to HALF-OPEN. |
+| `permittedNumberOfCallsInHalfOpenState` | `3` | 3 test calls are allowed in HALF-OPEN to decide whether to close or re-open. |
+| `automaticTransitionFromOpenToHalfOpenEnabled` | `true` | The circuit transitions to HALF-OPEN automatically after `waitDurationInOpenState` without requiring an incoming request. |
+| `max-attempts` (retry) | `3` | Up to 3 total attempts (1 original + 2 retries) before the failure is propagated. |
+| `wait-duration` (retry) | `5s` | Waits 5 seconds between retry attempts. |
+
+## Full `application.properties`
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ==============
+server.port=8082
+spring.application.name=order-service
+
+# ========== CONFIGURACION DE LA BASE DE DATOS ==========
+spring.datasource.url=jdbc:mysql://localhost:3306/order_service
+spring.datasource.username=root
+spring.datasource.password=123456
+spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+# ========== CONFIGURACION DE JPA / HIBERNATE ==========
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+
+# ========== CONFIGURACION DE EUREKA ==========
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+# ==========  FEIGN + CIRCUIT BREAKER
+feign.circuitbreaker.enabled=true
+
+# ========== RESILIENCE4J - CIRCUIT BREAKER
+resilience4j.circuitbreaker.instances.inventarioService.registerHealthIndicator=true
+resilience4j.circuitbreaker.instances.inventarioService.eventConsumerBufferSize=10
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowType=COUNT_BASED
+resilience4j.circuitbreaker.instances.inventarioService.slidingWindowSize=5
+resilience4j.circuitbreaker.instances.inventarioService.failureRateThreshold=50
+resilience4j.circuitbreaker.instances.inventarioService.waitDurationInOpenState=5s
+resilience4j.circuitbreaker.instances.inventarioService.permittedNumberOfCallsInHalfOpenState=3
+resilience4j.circuitbreaker.instances.inventarioService.automaticTransitionFromOpenToHalfOpenEnabled=true
+resilience4j.circuitbreaker.instances.inventarioService.minimumNumberOfCalls=5
+
+# ========== RESILIENCE4J - RETRY
+resilience4j.retry.instances.inventarioService.max-attempts=3
+resilience4j.retry.instances.inventarioService.wait-duration=5s
+```
+
+<Tip>
+  When the circuit breaker is in the **OPEN** state, calls to `POST /api/order` bypass `OrderService` entirely and go directly to `fallBackMethod`. The client receives a `201 CREATED` response with the body `{"mensaje": "Oops! Ha ocurrido un error al realizar el pedido"}`. This prevents cascading failures from an unavailable Inventario Service while still giving the caller a well-formed JSON response.
+</Tip>

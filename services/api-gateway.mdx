@@ -1,0 +1,148 @@
+---
+title: "API Gateway: unified entry point with JWT authentication"
+sidebarTitle: "API Gateway"
+description: "The API Gateway runs on port 8084 with Spring Cloud Gateway WebFlux. It routes requests to three services by path prefix and enforces Keycloak JWT auth on all routes."
+---
+
+The API Gateway is the single entry point for all external traffic in the EduComSer platform. It serves two distinct purposes: **routing** and **security**. On the routing side, it receives incoming HTTP requests, matches them against path-prefix predicates, and forwards them to the correct downstream microservice using Eureka-backed load-balanced URIs. On the security side, it acts as an OAuth 2.0 resource server — every request (except internal Eureka traffic) must carry a valid JWT signed by the configured Keycloak realm before it is forwarded.
+
+## Routing Configuration
+
+The gateway is built on Spring Cloud Gateway WebFlux and defines three routes, one for each business service. Routes are resolved using Eureka load-balanced URIs (`lb://`) so the gateway never needs hard-coded host-and-port pairs.
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ==============
+server.port=8084
+spring.application.name=api-gateway
+
+# ========== CONFIGURACION DE RUTAS DEL GATEWAY ==============
+
+# ===== RUTA 1: Producto Service
+spring.cloud.gateway.server.webflux.routes[0].id=producto-service
+spring.cloud.gateway.server.webflux.routes[0].uri=lb://producto-service
+spring.cloud.gateway.server.webflux.routes[0].predicates[0]=Path=/api/producto/**
+
+# ===== RUTA 2: Order Service
+spring.cloud.gateway.server.webflux.routes[1].id=order-service
+spring.cloud.gateway.server.webflux.routes[1].uri=lb://order-service
+spring.cloud.gateway.server.webflux.routes[1].predicates[0]=Path=/api/order/**
+
+# ===== RUTA 3: Inventario Service
+spring.cloud.gateway.server.webflux.routes[2].id=inventario-service
+spring.cloud.gateway.server.webflux.routes[2].uri=lb://inventario-service
+spring.cloud.gateway.server.webflux.routes[2].predicates[0]=Path=/api/inventario/**
+
+# ===== CONFIGURACIÓN DE EUREKA (CLIENTE)
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+# ===== PUNTO DE ENTRADA PARA CLIENTES KEYCLOAK
+spring.security.oauth2.resourceserver.jwt.issuer-uri=http://127.0.0.1:8080/realms/proyecto02-microservicios-realm
+```
+
+### Route breakdown
+
+<CardGroup cols={3}>
+  <Card title="producto-service" icon="box">
+    Any request matching `/api/producto/**` is forwarded to the `producto-service` instance(s) registered in Eureka.
+  </Card>
+  <Card title="order-service" icon="cart-shopping">
+    Any request matching `/api/order/**` is forwarded to the `order-service` instance(s) registered in Eureka.
+  </Card>
+  <Card title="inventario-service" icon="warehouse">
+    Any request matching `/api/inventario/**` is forwarded to the `inventario-service` instance(s) registered in Eureka.
+  </Card>
+</CardGroup>
+
+Each route entry uses:
+
+| Field | Description |
+|---|---|
+| `id` | A logical name for the route, matching the Eureka application name of the target service. |
+| `uri` | A load-balanced URI (`lb://`) resolved by Spring Cloud LoadBalancer against the Eureka registry. |
+| `predicates[0]` | A `Path` predicate — the gateway only matches and forwards requests whose path starts with the given prefix. |
+
+## Security Configuration
+
+The `SecurityConfig` class configures a reactive Spring Security filter chain. CSRF is disabled (appropriate for a stateless API gateway), all Eureka management paths are permit-all, and every other exchange must present a valid JWT.
+
+```java
+package com.api.gateway.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.SecurityWebFilterChain;
+
+import static org.springframework.security.config.Customizer.withDefaults;
+
+@Configuration
+@EnableWebFluxSecurity                          // Activates reactive (WebFlux) security
+public class SecurityConfig {
+
+    @Bean
+    public SecurityWebFilterChain springSecurityWebFilterChain(ServerHttpSecurity http) {
+        return http
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)     // Stateless API — no CSRF needed
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/eureka/**").permitAll()  // Eureka dashboard & client traffic allowed
+                        .anyExchange().authenticated()           // All other routes require a valid JWT
+                )
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(withDefaults())                     // Validates JWT using issuer-uri from properties
+                )
+                .build();
+    }
+}
+```
+
+### Key decisions
+
+- **`@EnableWebFluxSecurity`** — switches Spring Security into reactive mode, required because Spring Cloud Gateway runs on Project Reactor / Netty, not a Servlet container.
+- **`/eureka/**` permit-all** — allows Eureka client heartbeat and registration requests to pass through without a token. Without this, service registration would fail.
+- **`.anyExchange().authenticated()`** — every other path is protected. An unauthenticated request receives `401 Unauthorized`.
+- **`oauth2ResourceServer(...jwt(withDefaults()))`** — instructs the gateway to validate the `Authorization: Bearer <token>` header. The public key is fetched automatically from the Keycloak OIDC well-known endpoint derived from `issuer-uri`.
+
+## Keycloak Issuer URI
+
+The JWT issuer URI is declared in `application.properties`:
+
+```properties
+spring.security.oauth2.resourceserver.jwt.issuer-uri=http://127.0.0.1:8080/realms/proyecto02-microservicios-realm
+```
+
+Spring Security fetches the JWKS (JSON Web Key Set) from `{issuer-uri}/.well-known/openid-configuration` on startup to obtain the public keys used for signature verification.
+
+<Warning>
+  The issuer URI must match **exactly** the realm URL configured in Keycloak — including the scheme (`http` vs `https`), the hostname (`127.0.0.1` vs `localhost`), and the realm name. A mismatch between the `iss` claim in the token and this URI will cause every request to fail with `401 Unauthorized`.
+</Warning>
+
+## Maven Dependencies
+
+```xml
+<!-- Reactive API Gateway -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
+</dependency>
+
+<!-- Eureka service discovery client -->
+<dependency>
+    <groupId>org.springframework.cloud</groupId>
+    <artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
+</dependency>
+
+<!-- Spring Security (reactive) -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+
+<!-- OAuth2 resource server / JWT validation -->
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security-oauth2-resource-server</artifactId>
+</dependency>
+```
+
+All Spring Cloud artifacts are managed by the `spring-cloud-dependencies` BOM at version `2025.1.3`.

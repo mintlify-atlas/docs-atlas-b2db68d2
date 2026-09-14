@@ -1,0 +1,240 @@
+---
+title: "Inventario Service: SKU stock availability check API"
+sidebarTitle: "Inventario Service"
+description: "Inventario Service runs on port 8083, queries MySQL for SKU records, and returns per-SKU stock status including whether each product exists and has available quantity."
+---
+
+Inventario Service is the stock-management microservice in the EduComSer platform. Its sole responsibility is answering the question: "for each of these SKU codes, does the product exist, and does it have stock available?" It exposes a single `GET` endpoint that accepts one or more SKU codes as query parameters and returns a structured response for each one. The service queries a MySQL database, builds an in-memory lookup map, and then evaluates every requested SKU — distinguishing between products that do not exist at all and products that exist but have zero quantity. This fine-grained response allows Order Service to give callers precise error messages rather than a generic "unavailable" response.
+
+<Note>
+  Inventario Service is an **internal** service called by Order Service during order placement. It is not intended to be invoked directly by end-user clients. All external access should go through the API Gateway, which routes `/api/inventario/**` to this service.
+</Note>
+
+## Data Model
+
+### `Inventario` — JPA Entity
+
+```java
+package com.msvc.inventario.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Entity
+@Table(name = "inventario")
+@Getter
+@Setter
+@AllArgsConstructor
+@NoArgsConstructor
+public class Inventario {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;            // Auto-incremented primary key
+    private String codigoSku;   // Unique product SKU code
+    private Integer cantidad;   // Current stock quantity (0 = out of stock)
+}
+```
+
+## DTO
+
+### `InventarioResponse` — outbound payload
+
+One `InventarioResponse` object is returned per requested SKU, regardless of whether the SKU was found in the database.
+
+```java
+package com.msvc.inventario.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+@Data
+@AllArgsConstructor
+@NoArgsConstructor
+@Builder
+public class InventarioResponse {
+    private String codigoSku;   // The SKU code that was queried
+    private boolean inStock;    // true if the product exists AND cantidad > 0
+    private boolean existe;     // true if a record for this SKU exists in the database
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `codigoSku` | `String` | The SKU code echoed back from the request. |
+| `existe` | `boolean` | `true` when a row for this SKU exists in the `inventario` table. |
+| `inStock` | `boolean` | `true` when `existe == true` AND `cantidad > 0`. Always `false` when `existe == false`. |
+
+## REST Endpoint
+
+### `GET /api/inventario` — Check SKU availability
+
+Accepts one or more `codigoSku` query parameters and returns a `List<InventarioResponse>` with one entry per SKU.
+
+| Detail | Value |
+|---|---|
+| Method | `GET` |
+| Path | `/api/inventario` |
+| Query params | `codigoSku` (repeatable) |
+| Response status | `200 OK` |
+| Response body | `List<InventarioResponse>` (JSON array) |
+
+**Example request:**
+
+```bash
+GET /api/inventario?codigoSku=iphone_15&codigoSku=samsung_s23&codigoSku=unknown_sku
+```
+
+**Example response:**
+
+```json
+[
+  { "codigoSku": "iphone_15",   "inStock": true,  "existe": true  },
+  { "codigoSku": "samsung_s23", "inStock": false, "existe": true  },
+  { "codigoSku": "unknown_sku", "inStock": false, "existe": false }
+]
+```
+
+## Controller
+
+```java
+package com.msvc.inventario.controller;
+
+import com.msvc.inventario.dto.InventarioResponse;
+import com.msvc.inventario.service.InventarioService;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+@RequestMapping("/api/inventario")
+public class InventarioController {
+
+    private final InventarioService inventarioService;
+
+    public InventarioController(InventarioService inventarioService) {
+        this.inventarioService = inventarioService;
+    }
+
+    @GetMapping
+    @ResponseStatus(HttpStatus.OK)
+    public List<InventarioResponse> isInStock(@RequestParam List<String> codigoSku) {
+        return inventarioService.isInStock(codigoSku);
+    }
+}
+```
+
+## Service Logic
+
+The `isInStock` method is annotated `@Transactional(readOnly = true)` and processes the list of SKUs in three steps:
+
+<Steps>
+  <Step title="Query the database">
+    `inventarioRepository.findByCodigoSkuIn(listaCodigosSku)` issues a single `SELECT ... WHERE codigoSku IN (...)` query and returns only the rows that exist. SKUs absent from the database produce no row at all.
+  </Step>
+  <Step title="Build a lookup map">
+    The result list is converted into a `Map<String, Inventario>` keyed by `codigoSku` using `Collectors.toMap`. This avoids O(n²) lookups when iterating all requested SKUs.
+  </Step>
+  <Step title="Evaluate every requested SKU">
+    The service iterates over **all** requested SKUs — not just the ones found in the database. For each SKU:
+    - If the map contains an entry → `existe = true`, `inStock = (cantidad > 0)`
+    - If the map has no entry → `existe = false`, `inStock = false`
+
+    This guarantees that the response array has exactly one entry for every SKU in the request, preserving the original order.
+  </Step>
+</Steps>
+
+Full service implementation:
+
+```java
+package com.msvc.inventario.service;
+
+import com.msvc.inventario.dto.InventarioResponse;
+import com.msvc.inventario.entity.Inventario;
+import com.msvc.inventario.repository.InventarioRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+@Service
+public class InventarioService {
+
+    private final InventarioRepository inventarioRepository;
+
+    public InventarioService(InventarioRepository inventarioRepository) {
+        this.inventarioRepository = inventarioRepository;
+    }
+
+    @Transactional(readOnly = true)
+    public List<InventarioResponse> isInStock(List<String> listaCodigosSku) {
+        // 1. Fetch only the rows that exist in the database
+        List<Inventario> inventarioEncontrado = inventarioRepository.findByCodigoSkuIn(listaCodigosSku);
+
+        // 2. Build a fast-lookup map: codigoSku -> Inventario
+        Map<String, Inventario> inventarioMap = inventarioEncontrado.stream()
+                .collect(Collectors.toMap(Inventario::getCodigoSku, Function.identity()));
+
+        // 3. Evaluate ALL requested SKUs (including ones not found in the DB)
+        return listaCodigosSku.stream()
+                .map(sku -> {
+                    Inventario inventario = inventarioMap.get(sku);
+                    if (inventario != null) {
+                        // Product EXISTS in the database
+                        return InventarioResponse.builder()
+                                .codigoSku(sku)
+                                .inStock(inventario.getCantidad() > 0)
+                                .existe(true)
+                                .build();
+                    } else {
+                        // Product does NOT exist in the database
+                        return InventarioResponse.builder()
+                                .codigoSku(sku)
+                                .inStock(false)
+                                .existe(false)
+                                .build();
+                    }
+                })
+                .collect(Collectors.toList());
+    }
+}
+```
+
+## Configuration
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ==============
+server.port=8083
+spring.application.name=inventario-service
+
+# ========== CONFIGURACION DE LA BASE DE DATOS ==========
+spring.datasource.url=jdbc:mysql://localhost:3306/inventario_service
+spring.datasource.username=root
+spring.datasource.password=123456
+spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+# ========== CONFIGURACION DE JPA / HIBERNATE ==========
+spring.jpa.hibernate.ddl-auto=create-drop
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+
+# ========== CONFIGURACION DE EUREKA ==========
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+```
+
+| Property | Value | Notes |
+|---|---|---|
+| `server.port` | `8083` | The port this service listens on. |
+| `spring.application.name` | `inventario-service` | Used for Eureka registration and the `lb://inventario-service` URI in Order Service. |
+| `spring.datasource.url` | `jdbc:mysql://localhost:3306/inventario_service` | Points to the `inventario_service` MySQL schema. |
+| `spring.jpa.hibernate.ddl-auto` | `create-drop` | The schema is created on startup and dropped on shutdown. Seed data must be re-inserted on each run. |
+| `spring.jpa.show-sql` | `true` | Logs every SQL statement to the console — useful for verifying `IN` queries during development. |
+| `eureka.client.serviceUrl.defaultZone` | `http://localhost:8761/eureka` | The Eureka server endpoint this service registers with. |

@@ -1,47 +1,181 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get started with EduComSer Microservices"
+sidebarTitle: "Quickstart"
+description: "Clone the EduComSer repository, set up MongoDB and MySQL, configure Keycloak, and make your first authenticated API call in under 15 minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through every step needed to get all five EduComSer services running locally — from installing prerequisites to placing your first authenticated product creation request through the API Gateway. The entire process takes around 15 minutes on a machine that already has Java and a database server available.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
+
+  <Step title="Install prerequisites">
+    Ensure the following tools are installed and available on your `PATH` before continuing.
+
+    | Requirement | Minimum version | Notes |
+    |---|---|---|
+    | Java (JDK) | 17+ | The project targets Java 25 (`java.version=25` in root POM); JDK 25 is recommended |
+    | Apache Maven | 3.9+ | Or use the included `./mvnw` wrapper — no separate install required |
+    | MongoDB | 6+ | Must be reachable at `localhost:27017` |
+    | MySQL | 8+ | Must be reachable at `localhost:3306` |
+    | Keycloak | 22+ | Must be running at `http://127.0.0.1:8080` |
+
+    Verify your Java installation:
 
     ```bash
-    npm install your-package
+    java -version
     ```
   </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+
+  <Step title="Clone the repository">
+    Clone the project from GitHub and enter the root directory.
 
     ```bash
-    your-cli init
+    git clone https://github.com/HugoMontes/microservicios-educomser-02.git
+    cd microservicios-educomser-02
     ```
+
+    The root directory contains the parent `pom.xml` and one sub-directory per module:
+    `discovery-server`, `api-gateway`, `producto-service`, `order-service`, and `inventario-service`.
   </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+
+  <Step title="Create databases">
+    EduComSer uses **MongoDB** for the product catalogue and **MySQL** for orders and inventory.
+
+    **MongoDB** — create the `producto-service` database (MongoDB creates it implicitly on first write, but you can pre-create it):
 
     ```bash
-    your-cli start
+    mongosh --eval "use producto-service"
     ```
+
+    **MySQL** — create both relational databases. The credentials expected by the services are `root` / `123456`:
+
+    ```bash
+    mysql -u root -p123456 -e "CREATE DATABASE IF NOT EXISTS order_service;"
+    mysql -u root -p123456 -e "CREATE DATABASE IF NOT EXISTS inventario_service;"
+    ```
+
+    <Info>
+      The `order-service` uses `spring.jpa.hibernate.ddl-auto=update` so tables are created or updated automatically on first start. The `inventario-service` uses `create-drop`, meaning its schema is recreated on every restart — populate it after each launch.
+    </Info>
   </Step>
+
+  <Step title="Configure Keycloak">
+    EduComSer's API Gateway validates bearer tokens issued by Keycloak. Complete these one-time setup steps in the Keycloak Admin Console at `http://127.0.0.1:8080`.
+
+    **Create the realm:**
+    1. Log in to the Admin Console.
+    2. Click **Create Realm**.
+    3. Set **Realm name** to `proyecto02-microservicios-realm` and click **Create**.
+
+    **Create a client:**
+    1. Inside the new realm, go to **Clients** → **Create client**.
+    2. Set **Client ID** to any name (e.g., `educomser-client`).
+    3. Enable **Client authentication** (confidential client) or leave it as a public client for testing.
+    4. Add `http://localhost:*` as a valid redirect URI and click **Save**.
+
+    **Obtain a JWT for testing:**
+
+    For a public client (no client secret), use the Resource Owner Password Credentials grant (suitable for local development only):
+
+    ```bash
+    curl -s -X POST \
+      http://127.0.0.1:8080/realms/proyecto02-microservicios-realm/protocol/openid-connect/token \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      -d "client_id=educomser-client" \
+      -d "username=YOUR_USER" \
+      -d "password=YOUR_PASSWORD" \
+      -d "grant_type=password" \
+      | python3 -m json.tool
+    ```
+
+    Copy the `access_token` value from the response — you will use it as the Bearer token in subsequent requests.
+
+    <Warning>
+      The default `application.properties` files contain plaintext credentials (MySQL password `123456`, Keycloak issuer pointing to `127.0.0.1`). **Never commit real production credentials** to version control. Use environment variables or a secrets manager for any non-local deployment.
+    </Warning>
+  </Step>
+
+  <Step title="Build all modules">
+    From the project root, build every module with the Maven Wrapper. The multi-module build compiles and packages all five services in the correct dependency order.
+
+    ```bash
+    ./mvnw clean install
+    ```
+
+    On Windows:
+
+    ```bash
+    mvnw.cmd clean install
+    ```
+
+    A successful build ends with `BUILD SUCCESS` for each module and produces a runnable JAR inside every `target/` directory.
+  </Step>
+
+  <Step title="Start services in order">
+    Services must be started in a specific sequence: the Eureka registry must be available before any client service attempts to register.
+
+    <Tip>
+      Always start `discovery-server` first and wait until its console shows `Started EurekaApplication` before launching the business services. Start `api-gateway` last, after all downstream services have registered with Eureka. Starting the gateway before its upstream targets are registered results in `503 Service Unavailable` responses until they come online.
+    </Tip>
+
+    **1 — Discovery Server (Eureka registry):**
+
+    ```bash
+    cd discovery-server
+    ../mvnw spring-boot:run
+    ```
+
+    Verify it is running by opening `http://localhost:8761` in a browser. You should see the Eureka dashboard.
+
+    **2 — Business services** (open three separate terminals):
+
+    ```bash
+    # Terminal A
+    cd producto-service && ../mvnw spring-boot:run
+
+    # Terminal B
+    cd order-service && ../mvnw spring-boot:run
+
+    # Terminal C
+    cd inventario-service && ../mvnw spring-boot:run
+    ```
+
+    **3 — API Gateway (last):**
+
+    ```bash
+    cd api-gateway
+    ../mvnw spring-boot:run
+    ```
+
+    After a few seconds all four client services should appear as `UP` on the Eureka dashboard at `http://localhost:8761`.
+  </Step>
+
+  <Step title="Make your first API call">
+    With all services running, create a product through the gateway. Replace `YOUR_ACCESS_TOKEN` with the JWT obtained in Step 4.
+
+    ```bash
+    curl -s -X POST http://localhost:8084/api/producto \
+      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+            "nombre": "Laptop Pro 15",
+            "descripcion": "High-performance laptop",
+            "precio": 1299.99
+          }' \
+      -w "\nHTTP Status: %{http_code}\n"
+    ```
+
+    A successful response returns **HTTP 201 Created** with an empty body (the `guardarProducto` endpoint returns `void`).
+
+    To list all products:
+
+    ```bash
+    curl -s http://localhost:8084/api/producto \
+      -H "Authorization: Bearer YOUR_ACCESS_TOKEN" \
+      | python3 -m json.tool
+    ```
+
+    This returns a JSON array of all products stored in the `producto-service` MongoDB database.
+  </Step>
+
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>

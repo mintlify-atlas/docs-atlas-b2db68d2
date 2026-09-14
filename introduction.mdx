@@ -1,0 +1,56 @@
+---
+title: "EduComSer Microservices: Spring Boot service mesh for e-commerce"
+sidebarTitle: "Introduction"
+description: "EduComSer is a Spring Boot microservices platform with Eureka discovery, Spring Cloud Gateway routing, Keycloak JWT auth, and Resilience4j fault tolerance for e-commerce workloads."
+---
+
+EduComSer Microservices is a production-oriented e-commerce backend built as a Maven multi-module project on **Spring Boot 4.1.1** and **Spring Cloud 2025.1.3**. The platform decomposes a traditional monolithic shop into five independently deployable services — a discovery server, an API gateway, and three domain services for products, orders, and inventory. Every external request flows through a single secured entry point where Keycloak-issued JWTs are validated before traffic is load-balanced to the appropriate downstream service. Internally, the Order Service communicates with the Inventario Service via a `@LoadBalanced` WebClient, protected by a Resilience4j circuit breaker and retry policy, ensuring that a transient inventory outage never cascades into a full order-processing failure.
+
+## Service Modules
+
+All five modules are declared under the root `proyecto02` POM and share a common parent build lifecycle. Each service registers with Eureka on startup and is reachable through the API Gateway.
+
+| Module | Port | Role |
+|---|---|---|
+| `discovery-server` | **8761** | Netflix Eureka registry — all other services register here and resolve each other by name |
+| `api-gateway` | **8084** | Spring Cloud Gateway (WebFlux) — single entry point, JWT validation, path-based routing with client-side load balancing |
+| `producto-service` | **8081** | Product catalogue — CRUD operations backed by MongoDB |
+| `order-service` | **8082** | Order processing — persists orders to MySQL, calls `inventario-service` via WebClient to verify stock, protected by Resilience4j |
+| `inventario-service` | **8083** | Inventory management — exposes SKU stock queries via REST, persisted in MySQL |
+
+## Key Concepts
+
+<CardGroup cols={2}>
+  <Card title="Service Discovery" icon="radar">
+    The `discovery-server` runs a standalone Eureka registry on port **8761**. Each microservice registers on startup using `eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka`. No service needs a hard-coded peer address — all inter-service calls resolve by logical name via the registry.
+  </Card>
+  <Card title="API Gateway" icon="shield-halved">
+    The `api-gateway` is the only service exposed to external clients. It uses Spring Cloud Gateway (WebFlux mode) and routes requests by path prefix to the correct upstream service using load-balanced `lb://` URIs. CSRF protection is disabled for stateless JWT-based clients.
+  </Card>
+  <Card title="Fault Tolerance" icon="rotate">
+    The `order-service` uses **Resilience4j** for both circuit breaking and retry on its calls to `inventario-service`. The circuit breaker opens after 50% failures in a sliding window of 5 calls, waits 5 seconds in the open state, and probes with 3 calls in half-open before deciding to close again. A separate retry policy re-attempts failed calls up to 3 times with a 5-second wait.
+  </Card>
+  <Card title="Security" icon="key">
+    Authentication is handled by **Keycloak** acting as an OAuth 2.0 Authorization Server. The `api-gateway` is configured as an OAuth 2.0 Resource Server and validates every incoming JWT against the issuer URI `http://127.0.0.1:8080/realms/proyecto02-microservicios-realm`. The `/eureka/**` path is the only publicly accessible endpoint; all other exchanges require a valid bearer token.
+  </Card>
+</CardGroup>
+
+## Technology Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Runtime framework | Spring Boot | 4.1.1 |
+| Service mesh | Spring Cloud | 2025.1.3 |
+| Language | Java | 25 |
+| Build tool | Apache Maven | (Maven Wrapper included) |
+| Service registry | Netflix Eureka (Spring Cloud) | 2025.1.3 |
+| API gateway | Spring Cloud Gateway (WebFlux) | 2025.1.3 |
+| Circuit breaker / retry | Resilience4j | (via Spring Cloud) |
+| Identity provider | Keycloak | (OAuth 2.0 / JWT) |
+| Document store | MongoDB | — |
+| Relational store | MySQL 8 | — |
+| Boilerplate reduction | Project Lombok | — |
+
+<Note>
+  EduComSer uses a **Maven multi-module** structure. The root `pom.xml` (groupId `com.msvc.proyecto02`, artifactId `proyecto02`) declares all five services as `<module>` entries and manages the shared `spring-boot-starter-parent` version. Running `./mvnw clean install` from the project root builds every module in dependency order. Each child module inherits the parent configuration and overrides only module-specific properties such as `spring-cloud.version`.
+</Note>

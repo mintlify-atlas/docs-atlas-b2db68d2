@@ -1,0 +1,135 @@
+---
+title: "Database configuration for MongoDB and MySQL services"
+sidebarTitle: "Databases"
+description: "Configure MongoDB for Producto Service and MySQL for Order and Inventario services. Covers connection URIs, JPA/Hibernate settings, and schema management with ddl-auto."
+---
+
+EduComSer follows a **polyglot persistence** strategy — each service owns its data store and uses the technology that best suits its domain. Producto Service stores product catalog documents in **MongoDB**, while Order Service and Inventario Service manage relational transactional data in **MySQL**. This means each database must be provisioned and configured independently before the corresponding service can start.
+
+<Tabs>
+  <Tab title="MongoDB">
+    ## Producto Service — MongoDB
+
+    Producto Service connects to a local MongoDB instance on the default port `27017`. The database name is embedded directly in the connection URI.
+
+    ```properties
+    # ========== CONFIGURACION DE LA BASE DE DATOS ==========
+    spring.data.mongodb.uri=mongodb://localhost:27017/producto-service
+    ```
+
+    ### Database and collection
+
+    | Setting | Value |
+    |---|---|
+    | Host | `localhost` |
+    | Port | `27017` |
+    | Database | `producto-service` |
+    | Collection | `producto` |
+
+    The collection name is declared on the `Producto` entity using the `@Document` annotation:
+
+    ```java
+    @Document(value = "producto")
+    public class Producto {
+        @Id
+        private String id;
+        private String nombre;
+        private String descripcion;
+        private BigDecimal precio;
+    }
+    ```
+
+    ### Setup
+
+    You can either create the database manually or let Spring Data MongoDB create it automatically on the first document insert.
+
+    **Manual creation (optional):**
+
+    ```bash
+    mongosh
+    use producto-service
+    ```
+
+    Spring Data will create the `producto` collection automatically when the first document is saved — no migration scripts are required.
+
+    <Note>
+      MongoDB is schemaless, so there is no need for schema migration tools like Flyway or Liquibase. Spring Data MongoDB creates collections on demand. You only need to ensure the MongoDB server is running and reachable at `localhost:27017` before starting Producto Service.
+    </Note>
+  </Tab>
+
+  <Tab title="MySQL">
+    ## Order Service and Inventario Service — MySQL
+
+    Both Order Service and Inventario Service use MySQL running on the default port `3306`. Each service connects to its own dedicated database and manages its schema via Hibernate's `ddl-auto` setting.
+
+    ### Create the databases
+
+    Before starting either service, create the required databases:
+
+    ```sql
+    CREATE DATABASE order_service;
+    CREATE DATABASE inventario_service;
+    ```
+
+    ---
+
+    ### Order Service
+
+    Order Service uses `ddl-auto=update`, which applies incremental schema changes without dropping existing tables or data. This is safe for repeated restarts in development and production alike.
+
+    ```properties
+    # ========== CONFIGURACION DEL SERVIDOR ==============
+    server.port=8082
+    spring.application.name=order-service
+
+    # ========== CONFIGURACION DE LA BASE DE DATOS ==========
+    spring.datasource.url=jdbc:mysql://localhost:3306/order_service
+    spring.datasource.username=root
+    spring.datasource.password=123456
+    spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+    # ========== CONFIGURACION DE JPA / HIBERNATE ==========
+    spring.jpa.hibernate.ddl-auto=update
+    spring.jpa.show-sql=true
+    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+    ```
+
+    ---
+
+    ### Inventario Service
+
+    Inventario Service uses `ddl-auto=create-drop`, which **drops and recreates all tables** every time the application starts or stops. This is convenient for rapid development iteration but destroys all data on every restart.
+
+    ```properties
+    # ========== CONFIGURACION DEL SERVIDOR ==============
+    server.port=8083
+    spring.application.name=inventario-service
+
+    # ========== CONFIGURACION DE LA BASE DE DATOS ==========
+    spring.datasource.url=jdbc:mysql://localhost:3306/inventario_service
+    spring.datasource.username=root
+    spring.datasource.password=123456
+    spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+    # ========== CONFIGURACION DE JPA / HIBERNATE ==========
+    spring.jpa.hibernate.ddl-auto=create-drop
+    spring.jpa.show-sql=true
+    spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+    ```
+
+    <Warning>
+      `spring.jpa.hibernate.ddl-auto=create-drop` in Inventario Service **will DELETE all inventory data** every time the service restarts. This is suitable for development only. Before deploying to any persistent environment, change this value to `update` to preserve existing records.
+    </Warning>
+
+    ---
+
+    ### `ddl-auto` values reference
+
+    | Value | Behaviour | Recommended for |
+    |---|---|---|
+    | `update` | Adds new columns/tables; does not drop existing ones | Development & production |
+    | `create-drop` | Drops and recreates all tables on start/stop | Development only |
+    | `validate` | Validates schema against entities; makes no changes | Production (with migrations) |
+    | `none` | No schema management at all | Production (with migrations) |
+  </Tab>
+</Tabs>

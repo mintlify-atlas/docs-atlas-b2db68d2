@@ -1,0 +1,83 @@
+---
+title: "REST API endpoint for SKU stock availability check"
+sidebarTitle: "Inventario"
+description: "GET /api/inventario checks stock availability for a list of SKU codes. Returns per-SKU status including whether each product exists and whether it has stock available."
+---
+
+The inventario-service exposes a single read endpoint — `GET /api/inventario` — that reports stock availability for one or more SKU codes. While this endpoint is called automatically by the order-service during order placement (via Spring WebClient, load-balanced through Eureka), it is also accessible directly through the API Gateway at `http://localhost:8084`. Direct access requires a valid Keycloak Bearer token. This makes the endpoint useful for client-side stock checks, debugging order validation failures, or populating availability indicators in a front-end product catalog.
+
+---
+
+## GET /api/inventario
+
+Returns a per-SKU stock status report for every SKU code supplied as a query parameter.
+
+**Method:** `GET`  
+**Path:** `/api/inventario`  
+**Success status:** `200 OK`
+
+### Request Headers
+
+| Header | Value |
+|--------|-------|
+| `Authorization` | `Bearer <your-jwt>` |
+
+### Query Parameters
+
+<ParamField query="codigoSku" type="string[]" required>
+  One or more SKU codes to check. To query multiple SKUs in a single request, repeat the `codigoSku` parameter for each value. The service returns one result object per SKU provided, in the same order they were supplied.
+
+  **Example (single SKU):** `?codigoSku=laptop-hp-15`  
+  **Example (multiple SKUs):** `?codigoSku=laptop-hp-15&codigoSku=mouse-logitech`
+</ParamField>
+
+### Example Request
+
+```bash
+curl -X GET 'http://localhost:8084/api/inventario?codigoSku=laptop-hp-15&codigoSku=mouse-logitech' \
+  -H "Authorization: Bearer <your-jwt>"
+```
+
+### Response Body
+
+An array of stock status objects, one per requested SKU code:
+
+<ResponseField name="codigoSku" type="string">
+  The SKU code that was checked. Mirrors the value passed in the query parameter so you can correlate results when querying multiple SKUs.
+</ResponseField>
+
+<ResponseField name="existe" type="boolean">
+  `true` if a row for this SKU exists in the `inventario` table; `false` if no matching record was found.
+</ResponseField>
+
+<ResponseField name="inStock" type="boolean">
+  `true` if the SKU exists **and** its `cantidad` column value is greater than 0; `false` in all other cases (not found, or found with `cantidad = 0`).
+</ResponseField>
+
+### Example Response
+
+The following response illustrates all three possible states — a SKU with stock, a SKU that exists but is depleted, and a SKU with no inventory record at all:
+
+```json
+[
+  {"codigoSku": "laptop-hp-15", "existe": true, "inStock": true},
+  {"codigoSku": "mouse-logitech", "existe": true, "inStock": false},
+  {"codigoSku": "nonexistent-sku", "existe": false, "inStock": false}
+]
+```
+
+### Stock Logic
+
+The service resolves inventory status using the following rules derived from the `inventario` table:
+
+| `existe` | `inStock` | Meaning |
+|----------|-----------|---------|
+| `true` | `true` | SKU found in `inventario` table; `cantidad > 0`. |
+| `true` | `false` | SKU found in `inventario` table; `cantidad = 0` (out of stock). |
+| `false` | `false` | No row with this `codigoSku` exists in the `inventario` table. |
+
+If `existe` is `false`, the SKU has no record in the `inventario` table at all — it was never added or has been removed. If `existe` is `true` but `inStock` is `false`, the product record exists but its `cantidad` field is currently 0, meaning it is out of stock.
+
+<Note>
+  The order-service calls this endpoint internally for every SKU in an incoming order request before deciding whether to save the order. If any SKU returns `existe: false`, the order is rejected with a list of missing products. If all SKUs exist but any return `inStock: false`, the order is rejected with a list of out-of-stock products. The order is only persisted when every SKU passes both checks.
+</Note>

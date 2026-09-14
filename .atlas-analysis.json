@@ -1,0 +1,79 @@
+{
+  "projectType": "api-service",
+  "projectName": "EduComSer Microservices",
+  "projectDescription": "A Spring Boot microservices platform built with Spring Cloud, featuring product, order, and inventory services behind an API Gateway with Eureka service discovery and Keycloak OAuth2 security.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#DBEAFE",
+  "darkColor": "#1E3A8A",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Services",
+            "pages": [
+              "services/discovery-server",
+              "services/api-gateway",
+              "services/producto-service",
+              "services/order-service",
+              "services/inventario-service"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/databases",
+              "configuration/security",
+              "configuration/resilience"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/overview",
+              "api/productos",
+              "api/orders",
+              "api/inventario"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Eureka-based service discovery for dynamic microservice registration",
+    "Spring Cloud Gateway with load-balanced routing to all services",
+    "Keycloak OAuth2 / JWT authentication enforced at the gateway level",
+    "Resilience4j circuit breaker and retry on the Order Service",
+    "Polyglot persistence: MongoDB for productos, MySQL for orders and inventario",
+    "Inter-service communication via reactive WebClient",
+    "Maven multi-module project structure for all services"
+  ],
+  "publicApiSurface": [
+    "POST /api/producto — create a new product",
+    "GET /api/producto — list all products",
+    "POST /api/order — place a new order (with circuit breaker)",
+    "GET /api/inventario?codigoSku=... — check stock availability by SKU list",
+    "GET /eureka — Eureka discovery dashboard (permit-all)",
+    "SecurityConfig — OAuth2 JWT resource server filter chain",
+    "WebClientConfig — load-balanced WebClient builder bean",
+    "InventarioResponse (DTO) — {codigoSku, inStock, existe}",
+    "OrderRequest (DTO) — {orderLineItemDtoList[{codigoSku, precio, cantidad}]}",
+    "ProductoRequest / ProductoResponse (DTO) — {nombre, descripcion, precio}"
+  ]
+}

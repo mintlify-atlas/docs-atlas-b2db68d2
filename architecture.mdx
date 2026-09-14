@@ -1,0 +1,208 @@
+---
+title: "System architecture and service communication flow"
+sidebarTitle: "Architecture"
+description: "How EduComSer's five microservices communicate: Eureka service registration, API Gateway routing rules, and synchronous WebClient calls from Order to Inventario Service."
+---
+
+EduComSer follows a classic API-gateway microservices topology. A single Eureka registry acts as the nervous system — every service registers there on startup and resolves peer addresses by logical name rather than hard-coded host/port pairs. All traffic from external clients (browsers, mobile apps, other backends) enters exclusively through the API Gateway on port **8084**, which validates the Keycloak-issued JWT and then load-balances the request to the appropriate downstream service using the `lb://` scheme. Within the cluster, the Order Service calls the Inventario Service directly over an internal `@LoadBalanced` WebClient connection, bypassing the gateway entirely and communicating service-to-service via the names registered in Eureka.
+
+## Service Registration with Eureka
+
+Every module except the `discovery-server` itself is a Eureka client. Each service properties file points at the same registry address:
+
+```properties
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+```
+
+The `discovery-server` itself is configured as a standalone (non-registering) node:
+
+```properties
+server.port=8761
+spring.application.name=discovery-server
+
+eureka.instance.hostname=localhost
+eureka.client.register-with-eureka=false
+eureka.client.fetch-registry=false
+```
+
+Once registered, each service is addressable by its `spring.application.name` (e.g., `producto-service`, `order-service`, `inventario-service`) throughout the cluster.
+
+## API Gateway Routing Configuration
+
+The gateway resolves all three business routes using the `lb://` (load-balanced) URI scheme, meaning Eureka is consulted on every request to pick a healthy instance. The exact routing rules from `api-gateway/src/main/resources/application.properties`:
+
+```properties
+# ========== CONFIGURACION DEL SERVIDOR ==============
+server.port=8084
+spring.application.name=api-gateway
+
+# ========== CONFIGURACION DE RUTAS DEL GATEWAY ==============
+
+# ===== RUTA 1: Producto Service
+spring.cloud.gateway.server.webflux.routes[0].id=producto-service
+spring.cloud.gateway.server.webflux.routes[0].uri=lb://producto-service
+spring.cloud.gateway.server.webflux.routes[0].predicates[0]=Path=/api/producto/**
+
+# ===== RUTA 2: Order Service
+spring.cloud.gateway.server.webflux.routes[1].id=order-service
+spring.cloud.gateway.server.webflux.routes[1].uri=lb://order-service
+spring.cloud.gateway.server.webflux.routes[1].predicates[0]=Path=/api/order/**
+
+# ===== RUTA 3: Inventario Service
+spring.cloud.gateway.server.webflux.routes[2].id=inventario-service
+spring.cloud.gateway.server.webflux.routes[2].uri=lb://inventario-service
+spring.cloud.gateway.server.webflux.routes[2].predicates[0]=Path=/api/inventario/**
+
+# ===== CONFIGURACIÓN DE EUREKA (CLIENTE)
+eureka.client.serviceUrl.defaultZone=http://localhost:8761/eureka
+
+# ===== PUNTO DE ENTRADA PARA CLIENTES KEYCLOAK
+spring.security.oauth2.resourceserver.jwt.issuer-uri=http://127.0.0.1:8080/realms/proyecto02-microservicios-realm
+```
+
+## Security Configuration
+
+The gateway's `SecurityConfig` class configures a reactive `SecurityWebFilterChain`. It disables CSRF (appropriate for stateless JWT clients), permits only the `/eureka/**` path publicly (used for Eureka peer communication), and requires authentication on every other exchange. JWT validation is delegated to Spring Security's built-in OAuth 2.0 Resource Server support, which automatically fetches the JWKS from the Keycloak realm:
+
+```java
+package com.api.gateway.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
+import org.springframework.security.config.web.server.ServerHttpSecurity;
+import org.springframework.security.web.server.SecurityWebFilterChain;
+
+import static org.springframework.security.config.Customizer.withDefaults;
+
+@Configuration
+@EnableWebFluxSecurity
+public class SecurityConfig {
+
+    @Bean
+    public SecurityWebFilterChain springSecurityWebFilterChain(ServerHttpSecurity http) {
+        return http
+                .csrf(ServerHttpSecurity.CsrfSpec::disable)
+                .authorizeExchange(exchanges -> exchanges
+                        .pathMatchers("/eureka/**").permitAll()
+                        .anyExchange().authenticated()
+                )
+                .oauth2ResourceServer(oauth2 -> oauth2
+                        .jwt(withDefaults())
+                )
+                .build();
+    }
+}
+```
+
+## Request Lifecycle: POST /api/order
+
+The following steps trace the complete journey of an order placement request — the most complex flow in the platform because it crosses three services.
+
+<Steps>
+
+  <Step title="Client sends authenticated request to the gateway">
+    An external client sends a `POST` request to `http://localhost:8084/api/order` with a Keycloak-issued JWT in the `Authorization: Bearer` header and an `OrderRequest` JSON body containing a list of `orderLineItems` (each with a `codigoSku`, `cantidad`, and `precio`).
+  </Step>
+
+  <Step title="Gateway validates the JWT">
+    The `SecurityWebFilterChain` in the `api-gateway` intercepts the request. Spring Security contacts Keycloak's JWKS endpoint (derived automatically from `spring.security.oauth2.resourceserver.jwt.issuer-uri`) to verify the token's signature, expiry, and issuer. If validation fails the gateway returns `401 Unauthorized` immediately — the request never reaches the business layer.
+  </Step>
+
+  <Step title="Gateway routes to order-service">
+    The token is valid. The gateway matches the path `/api/order/**` against route index `1` and forwards the request to `lb://order-service`. Eureka supplies the current host/port of a healthy `order-service` instance. The JWT is forwarded in the request headers.
+  </Step>
+
+  <Step title="Order Service calls Inventario Service via WebClient">
+    Inside `OrderService.placeOrder()`, the service extracts all SKU codes from the order line items and issues an internal **GET** request to `http://inventario-service/api/inventario?codigoSku=...` using a `@LoadBalanced` `WebClient.Builder`. The `@LoadBalanced` annotation ensures that `inventario-service` is resolved through Eureka — no hard-coded address is used. The call is wrapped by a `@CircuitBreaker` and `@Retry` annotation on `OrderController.realizarPedido()`, both named `inventarioService`, referencing the Resilience4j configuration in `order-service`'s `application.properties`.
+
+    ```java
+    InventarioResponse[] inventarioResponseArray = webClientBuilder.build().get()
+        .uri("http://inventario-service/api/inventario", uriBuilder -> uriBuilder
+            .queryParam("codigoSku", codigoSku).build())
+        .retrieve()
+        .bodyToMono(InventarioResponse[].class)
+        .block();
+    ```
+  </Step>
+
+  <Step title="Inventario Service responds and Order Service persists">
+    The `inventario-service` queries its MySQL database and returns an array of `InventarioResponse` objects, each containing the `codigoSku`, an `existe` flag, and an `inStock` flag. The `order-service` evaluates the response: if any SKU does not exist or has no stock, the order is rejected with a descriptive message; otherwise the order is persisted to the `order_service` MySQL database with a UUID as the `numeroPedido`.
+  </Step>
+
+  <Step title="Response propagates back to the client">
+    The `OrderController` returns a `Map<String, String>` with a single `"mensaje"` key (e.g., `"Pedido ordenado con exito"`) and HTTP status `201 Created`. The response travels back through the gateway to the original caller. If the Inventario Service was unreachable and the circuit breaker opened, the `fallBackMethod` intercepts the call and returns `"Oops! Ha ocurrido un error al realizar el pedido"` instead of a stack trace.
+  </Step>
+
+</Steps>
+
+## Communication Patterns
+
+<CardGroup cols={2}>
+  <Card title="External Traffic via API Gateway" icon="globe">
+    All client-facing communication enters through the API Gateway on port **8084**. The gateway is the only service that needs to be publicly exposed. It handles JWT validation centrally, removing the need for each downstream service to implement its own authentication logic. Path-based routing directs traffic to one of three upstream services:
+
+    - `/api/producto/**` → `producto-service` (port 8081)
+    - `/api/order/**` → `order-service` (port 8082)
+    - `/api/inventario/**` → `inventario-service` (port 8083)
+
+    Load balancing is client-side (Spring Cloud LoadBalancer), using the Eureka registry to discover healthy instances.
+  </Card>
+  <Card title="Internal Traffic via WebClient" icon="server">
+    Service-to-service calls that do not originate from an external client bypass the gateway entirely. The `order-service` uses a `@LoadBalanced WebClient.Builder` bean to call `inventario-service` directly at `http://inventario-service/api/inventario`. The `@LoadBalanced` annotation instructs Spring Cloud LoadBalancer to intercept the URI and resolve `inventario-service` to a real host/port via Eureka. This path is protected by Resilience4j — the circuit breaker named `inventarioService` monitors failure rates and opens after 50% failures in a 5-call sliding window, automatically transitioning to half-open after 5 seconds.
+  </Card>
+</CardGroup>
+
+## Polyglot Persistence
+
+EduComSer deliberately uses different databases for different workloads, choosing the storage model that best fits each domain.
+
+### MongoDB — Product Catalogue
+
+The `producto-service` stores product documents in MongoDB at `mongodb://localhost:27017/producto-service`. A document store is a natural fit for a product catalogue because product schemas often vary by category and evolve frequently without requiring schema migrations.
+
+```properties
+# producto-service/src/main/resources/application.properties
+server.port=8081
+spring.application.name=producto-service
+
+spring.data.mongodb.uri=mongodb://localhost:27017/producto-service
+```
+
+### MySQL — Orders and Inventory
+
+Both `order-service` and `inventario-service` use MySQL because their data is highly relational: an order consists of a parent `Order` entity with a one-to-many collection of `OrderLineItems`, and inventory records require transactional consistency (stock counts must not diverge under concurrent updates).
+
+```properties
+# order-service/src/main/resources/application.properties
+server.port=8082
+spring.application.name=order-service
+
+spring.datasource.url=jdbc:mysql://localhost:3306/order_service
+spring.datasource.username=root
+spring.datasource.password=123456
+spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+```
+
+```properties
+# inventario-service/src/main/resources/application.properties
+server.port=8083
+spring.application.name=inventario-service
+
+spring.datasource.url=jdbc:mysql://localhost:3306/inventario_service
+spring.datasource.username=root
+spring.datasource.password=123456
+spring.datasource.driver=com.mysql.cj.jdbc.Driver
+
+spring.jpa.hibernate.ddl-auto=create-drop
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.MySQLDialect
+```
+
+<Warning>
+  The `inventario-service` uses `ddl-auto=create-drop`, which **drops and recreates the schema on every application restart**. Re-seed inventory data after each restart, or change this setting to `update` or `validate` in any environment where data must survive restarts.
+</Warning>
